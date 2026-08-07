@@ -168,10 +168,11 @@ jobs:
 
           docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ALIYUN_REGISTRY}"
 
-          # create 会自动拉取两个单架构 manifest;若 MULTI_TAG 已存在则先删
-          docker manifest rm "${MULTI_TAG}" 2>/dev/null || true
-          docker manifest create "${MULTI_TAG}" "${AMD64_TAG}" "${ARM64_TAG}"
-          docker manifest push "${MULTI_TAG}"
+          # 用 buildx imagetools 合并(不是 docker manifest create)。
+          # 原因:buildx --push 推的单架构镜像也是 manifest list 格式,
+          # docker manifest create 不接受 manifest list 作为输入(报 "is a manifest list")。
+          # imagetools create 专门处理 manifest list,能正确合并多架构。
+          docker buildx imagetools create -t "${MULTI_TAG}" "${AMD64_TAG}" "${ARM64_TAG}"
 
           echo "✅ 多架构镜像推送成功: ${MULTI_TAG}"
 

@@ -2,63 +2,91 @@
 # CentOS 7 glibc 2.17 编译环境镜像
 # 构建示例:
 #   docker build -f Dockerfile-glib2.17 -t xtrabackup:base-glib-2.17 .
+#   # 国内构建用南大镜像加速:
+#   docker build -f Dockerfile-glib2.17 --build-arg ZONE=cn -t xtrabackup:base-glib-2.17 .
 #   # 内网走代理下载 patchelf:
 #   docker build -f Dockerfile-glib2.17 --build-arg GH_PROXY=https://gh.1102345.xyz/ -t xtrabackup:base-glib-2.17 .
 #   # 多架构(buildx 自动注入 TARGETARCH):
 #   docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile-glib2.17 -t xtrabackup:base-glib-2.17 .
 #
 # 可用 ARG:
-#   GH_PROXY        GitHub 下载代理前缀,默认空(直连)。例:https://gh.1102345.xyz/
+#   ZONE             区域:空(默认)=vault.centos.org 官方存档;cn=南大镜像(国内加速)
+#   GH_PROXY         GitHub 下载代理前缀,默认空(直连)。例:https://gh.1102345.xyz/
 #   PATCHELF_VERSION patchelf 版本,默认 0.19.1
-#   TARGETARCH      buildx 自动注入(amd64/arm64),无需手动传
+#   TARGETARCH       buildx 自动注入(amd64/arm64),无需手动传
 # registry.cn-hangzhou.aliyuncs.com/lpx03/xtrabackup:base-glib-2.17
 FROM centos:7.9.2009
 
 # buildx 多架构:TARGETARCH 由 buildx 自动注入(amd64/arm64)
+ARG ZONE=""
 ARG GH_PROXY=""
 ARG PATCHELF_VERSION=0.19.1
 ARG TARGETARCH
 
 # ============================================================
-# yum 源修复:统一使用南大镜像 mirror.nju.edu.cn(CentOS 7 已 EOL)
-# amd64 / arm64 的 vault 路径不同,且 arm64 的 SCL 无 devtoolset-11-gcc,
-# 故按 TARGETARCH 分流:
-#   amd64 -> centos-vault/centos/...   + devtoolset-11
-#   arm64 -> centos-vault/altarch/...  + devtoolset-10
-# 实测原 sed 方案在 arm64/分组正则上会触发 "unknown option to s"(分隔符冲突),
-# 且替换命中率不稳定,故改用 printf 直接重写 repo 文件,确定性更高。
-# gpgcheck 全部关闭(部分 key 在 vault 下对不上,构建镜像场景可接受)。
+# yum 源修复:CentOS 7 已 EOL,镜像内官方源全部失效,必须改用存档源
+# ZONE 控制用哪个存档:
+#   默认(空) -> vault.centos.org 官方存档(海外 CI 用)
+#   cn       -> mirror.nju.edu.cn 南大镜像(国内加速)
+# amd64/arm64 路径不同,按 TARGETARCH 分流(arm64 走 altarch/):
+#   amd64 -> <vault>/centos/7.9.2009/os/x86_64/
+#   arm64 -> <vault>/altarch/7.9.2009/os/aarch64/
+# 用 printf 重写 repo(比 sed 稳定,避开正则/转义坑)。
+# gpgcheck 全部关闭(存档源 key 对不上,构建镜像场景可接受)。
 # ============================================================
 RUN set -e && \
     if [ "$TARGETARCH" = "arm64" ]; then \
-        VAULT="https://mirror.nju.edu.cn/centos-vault/altarch"; \
+        if [ "${ZONE}" = "cn" ]; then \
+            VAULT="https://mirror.nju.edu.cn/centos-vault/altarch"; \
+        else \
+            VAULT="https://vault.centos.org/altarch"; \
+        fi; \
     else \
-        VAULT="https://mirror.nju.edu.cn/centos-vault/centos"; \
+        if [ "${ZONE}" = "cn" ]; then \
+            VAULT="https://mirror.nju.edu.cn/centos-vault/centos"; \
+        else \
+            VAULT="https://vault.centos.org"; \
+        fi; \
     fi && \
     printf '[base]\nname=CentOS-7 - Base\nbaseurl=%s/$releasever/os/$basearch/\ngpgcheck=0\n\n[updates]\nname=CentOS-7 - Updates\nbaseurl=%s/$releasever/updates/$basearch/\ngpgcheck=0\n\n[extras]\nname=CentOS-7 - Extras\nbaseurl=%s/$releasever/extras/$basearch/\ngpgcheck=0\n' \
         "$VAULT" "$VAULT" "$VAULT" > /etc/yum.repos.d/CentOS-Base.repo && \
-    echo "==> [$TARGETARCH] CentOS-Base -> ${VAULT}"
+    echo "==> [$TARGETARCH][ZONE=${ZONE:-default}] CentOS-Base -> ${VAULT}"
 
-# Step B: 安装 EPEL + SCL 仓库,然后重写这两个源到南大镜像
+# Step B: 安装 EPEL + SCL 仓库,然后配置这两个源
+# EPEL:ZONE=cn 用南大镜像,默认用 dl.fedoraproject.org 官方
+# SCL: 与 base 同源(同一 VAULT 下的 sclo/ 子目录)
 RUN set -e && \
     yum install -y epel-release centos-release-scl && \
     if [ "$TARGETARCH" = "arm64" ]; then \
-        VAULT="https://mirror.nju.edu.cn/centos-vault/altarch"; \
+        if [ "${ZONE}" = "cn" ]; then \
+            VAULT="https://mirror.nju.edu.cn/centos-vault/altarch"; \
+        else \
+            VAULT="https://vault.centos.org/altarch"; \
+        fi; \
     else \
-        VAULT="https://mirror.nju.edu.cn/centos-vault/centos"; \
+        if [ "${ZONE}" = "cn" ]; then \
+            VAULT="https://mirror.nju.edu.cn/centos-vault/centos"; \
+        else \
+            VAULT="https://vault.centos.org"; \
+        fi; \
+    fi && \
+    if [ "${ZONE}" = "cn" ]; then \
+        EPEL_BASE="https://mirror.nju.edu.cn/epel"; \
+    else \
+        EPEL_BASE="https://dl.fedoraproject.org/pub/epel"; \
     fi && \
     sed -i \
         -e 's|^mirrorlist=|#mirrorlist=|g' \
         -e 's|^metalink=|#metalink=|g' \
-        -e 's|^#baseurl=http://download.fedoraproject.org/pub/epel/\(.*\)|baseurl=https://mirror.nju.edu.cn/epel/\1|g' \
-        -e 's|^# baseurl=http://download.fedoraproject.org/pub/epel/\(.*\)|baseurl=https://mirror.nju.edu.cn/epel/\1|g' \
+        -e "s|^#baseurl=.*download\.fedoraproject\.org/pub/epel\(.*\)|baseurl=${EPEL_BASE}\1|g" \
+        -e "s|^# baseurl=.*download\.fedoraproject\.org/pub/epel\(.*\)|baseurl=${EPEL_BASE}\1|g" \
         -e 's|^gpgcheck=1|gpgcheck=0|g' \
         /etc/yum.repos.d/epel.repo /etc/yum.repos.d/epel-testing.repo && \
     printf '[centos-sclo-rh]\nname=CentOS-7 - SCLo rh\nbaseurl=%s/$releasever/sclo/$basearch/rh/\ngpgcheck=0\nenabled=1\n' \
         "$VAULT" > /etc/yum.repos.d/CentOS-SCLo-scl-rh.repo && \
     printf '[centos-sclo-sclo]\nname=CentOS-7 - SCLo sclo\nbaseurl=%s/$releasever/sclo/$basearch/sclo/\ngpgcheck=0\nenabled=1\n' \
         "$VAULT" > /etc/yum.repos.d/CentOS-SCLo-scl.repo && \
-    echo "==> [$TARGETARCH] SCLo repo -> ${VAULT}"
+    echo "==> [$TARGETARCH][ZONE=${ZONE:-default}] SCLo/epel 源配置完成"
 
 # ============================================================
 # 安装全部编译依赖

@@ -2,37 +2,53 @@
 # registry.cn-hangzhou.aliyuncs.com/lpx03/xtrabackup:base-glib-2.28
 # 构建示例:
 #   docker build -f Dockerfile-glib2.28 -t xtrabackup:base-glib-2.28 .
+#   # 国内构建用南大镜像加速:
+#   docker build -f Dockerfile-glib2.28 --build-arg ZONE=cn -t xtrabackup:base-glib-2.28 .
 #   # 内网走代理下载 patchelf:
 #   docker build -f Dockerfile-glib2.28 --build-arg GH_PROXY=https://gh.1102345.xyz/ -t xtrabackup:base-glib-2.28 .
 #   # 多架构(buildx 自动注入 TARGETARCH):
 #   docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile-glib2.28 -t xtrabackup:base-glib-2.28 .
 #
 # 可用 ARG:
-#   GH_PROXY        GitHub 下载代理前缀,默认空(直连)。例:https://gh.1102345.xyz/
+#   ZONE             区域:空(默认)=官方源;cn=南大镜像源(国内加速)
+#   GH_PROXY         GitHub 下载代理前缀,默认空(直连)。例:https://gh.1102345.xyz/
 #   PATCHELF_VERSION patchelf 版本,默认 0.19.1
-#   TARGETARCH      buildx 自动注入(amd64/arm64),无需手动传
+#   TARGETARCH       buildx 自动注入(amd64/arm64),无需手动传
 
 FROM registry.cn-hangzhou.aliyuncs.com/lpx03/rockylinux:8.9.20231119
 
 # buildx 多架构:TARGETARCH 由 buildx 自动注入(amd64/arm64)
+ARG ZONE=""
 ARG GH_PROXY=""
 ARG PATCHELF_VERSION=0.19.1
 ARG TARGETARCH
 
-# # 替换 Rocky Linux 源为南大镜像
-# RUN sed -e 's|^mirrorlist=|#mirrorlist=|g' \
-#         -e 's|^#baseurl=http://dl.rockylinux.org/$contentdir|baseurl=https://mirror.nju.edu.cn/rocky|g' \
-#         -i.bak \
-#         /etc/yum.repos.d/Rocky-*.repo
+# ============================================================
+# yum 源配置:ZONE=cn 用南大镜像(国内加速),否则用官方源
+# ============================================================
+# ZONE=cn 时把 Rocky 官方源替换为南大镜像(禁 mirrorlist,改 baseurl)
+RUN if [ "${ZONE}" = "cn" ]; then \
+        echo "==> [ZONE=cn] Rocky 源 -> 南大镜像"; \
+        sed -i \
+            -e 's|^mirrorlist=|#mirrorlist=|g' \
+            -e 's|^#baseurl=http://dl.rockylinux.org/$contentdir|baseurl=https://mirror.nju.edu.cn/rocky|g' \
+            /etc/yum.repos.d/Rocky-*.repo; \
+    else \
+        echo "==> [ZONE=默认] 使用 Rocky 官方源"; \
+    fi
 
-# 安装 EPEL 并替换为南大镜像: 包含了powerTools,要不然得单独加repo
-RUN yum install -y epel-release 
-#    && \
-#    sed -e 's!^metalink=!#metalink=!g' \
-#        -e 's!^#baseurl=!baseurl=!g' \
-#        -e 's!https\?://download\.fedoraproject\.org/pub/epel!https://mirror.nju.edu.cn/epel!g' \
-#        -e 's!https\?://download\.example/pub/epel!https://mirror.nju.edu.cn/epel!g' \
-#        -i /etc/yum.repos.d/epel.repo /etc/yum.repos.d/epel-testing.repo
+# 安装 EPEL。ZONE=cn 时同时把 EPEL 源替换为南大镜像
+# (EPEL 提供 PowerTools 里部分包,PowerTools 通过下面 --enablerepo 启用)
+RUN yum install -y epel-release && \
+    if [ "${ZONE}" = "cn" ]; then \
+        echo "==> [ZONE=cn] EPEL 源 -> 南大镜像"; \
+        sed -i \
+            -e 's|^metalink=|#metalink=|g' \
+            -e 's|^#baseurl=|baseurl=|g' \
+            -e 's|https\?://download\.fedoraproject\.org/pub/epel|https://mirror.nju.edu.cn/epel|g' \
+            -e 's|https\?://download\.example/pub/epel|https://mirror.nju.edu.cn/epel|g' \
+            /etc/yum.repos.d/epel.repo /etc/yum.repos.d/epel-testing.repo; \
+    fi
 
 # 安装编译依赖
 RUN yum install -y procps-ng-devel --enablerepo=powertools && \

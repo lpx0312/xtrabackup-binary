@@ -34,6 +34,14 @@ on:
           - amd64
           - arm64
         default: all
+      zone:
+        description: '区域:空(默认)=官方源;cn=南大镜像(国内加速 yum/DNF 源)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - cn
+        default: ''
 
 jobs:
   # ============================================================
@@ -58,6 +66,7 @@ jobs:
           ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
         run: |
           GLIB_VERSION="${{ github.event.inputs.glib_version }}"
+          ZONE="${{ github.event.inputs.zone }}"
           ARCH="amd64"
           ACR_URL="${ALIYUN_REGISTRY}"
           ACR_NS="${ALIYUN_NAME_SPACE}"
@@ -68,6 +77,7 @@ jobs:
           echo "  构建基础镜像(${ARCH}, 原生 runner)"
           echo "============================================"
           echo "  glibc 版本:  ${GLIB_VERSION}"
+          echo "  ZONE:        ${ZONE:-default}"
           echo "  Dockerfile:  base/Dockerfile-glib${GLIB_VERSION}"
           echo "  目标镜像:    ${TARGET}"
           echo "  平台:        linux/${ARCH}"
@@ -75,11 +85,18 @@ jobs:
 
           docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ACR_URL}"
 
+          # ZONE 非空时透传给 Dockerfile(国内构建用南大镜像加速 yum/DNF 源)
+          ZONE_ARG=()
+          if [ -n "${ZONE}" ]; then
+            ZONE_ARG=(--build-arg "ZONE=${ZONE}")
+          fi
+
           docker buildx build \
             --platform "linux/${ARCH}" \
             -t "${TARGET}" \
             -f "base/Dockerfile-glib${GLIB_VERSION}" \
             --no-cache \
+            "${ZONE_ARG[@]}" \
             --push \
             base/
 
@@ -113,6 +130,7 @@ jobs:
           ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
         run: |
           GLIB_VERSION="${{ github.event.inputs.glib_version }}"
+          ZONE="${{ github.event.inputs.zone }}"
           ARCH="arm64"
           ACR_URL="${ALIYUN_REGISTRY}"
           ACR_NS="${ALIYUN_NAME_SPACE}"
@@ -123,6 +141,7 @@ jobs:
           echo "  构建基础镜像(${ARCH}, 原生 runner)"
           echo "============================================"
           echo "  glibc 版本:  ${GLIB_VERSION}"
+          echo "  ZONE:        ${ZONE:-default}"
           echo "  Dockerfile:  base/Dockerfile-glib${GLIB_VERSION}"
           echo "  目标镜像:    ${TARGET}"
           echo "  平台:        linux/${ARCH}"
@@ -130,11 +149,18 @@ jobs:
 
           docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ACR_URL}"
 
+          # ZONE 非空时透传给 Dockerfile(国内构建用南大镜像加速 yum/DNF 源)
+          ZONE_ARG=()
+          if [ -n "${ZONE}" ]; then
+            ZONE_ARG=(--build-arg "ZONE=${ZONE}")
+          fi
+
           docker buildx build \
             --platform "linux/${ARCH}" \
             -t "${TARGET}" \
             -f "base/Dockerfile-glib${GLIB_VERSION}" \
             --no-cache \
+            "${ZONE_ARG[@]}" \
             --push \
             base/
 
@@ -177,9 +203,10 @@ jobs:
 
           docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ALIYUN_REGISTRY}"
 
-          # create 自动拉取两个单架构 manifest;若 MULTI_TAG 已存在则先删
-          docker manifest rm "${MULTI_TAG}" 2>/dev/null || true
-          docker manifest create "${MULTI_TAG}" "${AMD64_TAG}" "${ARM64_TAG}"
-          docker manifest push "${MULTI_TAG}"
+          # 用 buildx imagetools 合并(不是 docker manifest create)。
+          # 原因:buildx --push 推的单架构镜像也是 manifest list 格式,
+          # docker manifest create 不接受 manifest list 作为输入(报 "is a manifest list")。
+          # imagetools create 专门处理 manifest list,能正确合并多架构。
+          docker buildx imagetools create -t "${MULTI_TAG}" "${AMD64_TAG}" "${ARM64_TAG}"
 
           echo "✅ 多架构基础镜像推送成功: ${MULTI_TAG}"
