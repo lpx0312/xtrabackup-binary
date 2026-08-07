@@ -1,0 +1,11 @@
+# ZCode 本地工作目录
+.zcode/
+
+# 编译产物
+output/
+out-raw/
+
+# 离线构建的源码/boost 包(由 build-offline/sources/download.sh 按需下载,不入库)
+build-offline/sources/*.tar.gz
+build-offline/sources/*.tar.bz2
+build-offline/sources/*.tar.xz

@@ -1,18 +1,29 @@
 name: Build Binary & Release
 
+# CI 流水线:手动触发,按架构矩阵并行编译 PXB 二进制 → 发 Release → (可选)推多架构镜像。
+#
+# 入参:
+#   PXB_VERSION   - PXB 完整版本号(如 8.0.35-36、2.4.29),原样透传给 build/Dockerfile 的 ARG PXB_VERSION
+#   glib_version  - glibc 版本(2.28/2.17),决定用哪个基础镜像
+#   build_image   - 是否制作并推送 Docker 镜像到 ACR(默认 true)
+#
+# 流程:
+#   compile (matrix: amd64, arm64)  →  release           (必跑:发 Release,挂两架构 tarball)
+#                                   →  merge-manifest    (仅 build_image=true:合并多架构镜像)
+
 permissions:
   contents: write
 
 on:
   workflow_dispatch:
     inputs:
-      xtrabackup_version:
-        description: 'XtraBackup 版本（如 8.4.0-6）'
+      PXB_VERSION:
+        description: 'PXB 完整版本号(原样传给 Dockerfile,如 8.0.35-36、2.4.29)'
         required: true
-        default: '8.4.0-6'
+        default: '8.0.35-36'
         type: string
       glib_version:
-        description: 'glibc 版本（决定使用哪个基础镜像）'
+        description: 'glibc 版本(决定用哪个基础镜像)'
         required: true
         type: choice
         options:
@@ -20,15 +31,22 @@ on:
           - '2.17'
         default: '2.28'
       build_image:
-        description: '是否制作 Docker 镜像并推送到 ACR'
+        description: '是否制作 Docker 镜像并推送到 ACR(单架构 tag + 合并多架构 tag)'
         required: true
         type: boolean
         default: true
 
 jobs:
-  build:
+  # ============================================================
+  # Job 1: 按架构矩阵并行编译 + (可选)推单架构镜像
+  # ============================================================
+  compile:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -36,9 +54,6 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup
 
-      # ============================================================
-      # Step 1: 登录 ACR
-      # ============================================================
       - name: Login ACR
         run: |
           docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ALIYUN_REGISTRY}"
@@ -47,60 +62,119 @@ jobs:
           ALIYUN_REGISTRY_USER: ${{ vars.ALIYUN_REGISTRY_USER }}
           ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
 
-      # ============================================================
-      # Step 2: 编译二进制（必须执行）
-      # ============================================================
-      - name: Build Binary
+      # 编译二进制(单架构),产物输出到 output/
+      - name: Build Binary (${{ matrix.arch }})
         run: bash build/ci-build-binary.sh
         env:
-          XTRABACKUP_VERSION: ${{ github.event.inputs.xtrabackup_version }}
+          PXB_VERSION: ${{ github.event.inputs.PXB_VERSION }}
           GLIB_VERSION: ${{ github.event.inputs.glib_version }}
+          ARCH: ${{ matrix.arch }}
           BASE_IMG_URL: ${{ vars.ALIYUN_REGISTRY }}/${{ vars.ALIYUN_NAME_SPACE }}
 
-      # ============================================================
-      # Step 3: 上传产物到 GitHub Release（必须执行）
-      # ============================================================
-      - name: Create Release and Upload Binary
+      # 制作并推送单架构镜像(可选,默认开)
+      - name: Build and Push Image (${{ matrix.arch }})
+        if: ${{ github.event.inputs.build_image == 'true' }}
+        run: bash build/ci-build-image.sh
+        env:
+          PXB_VERSION: ${{ github.event.inputs.PXB_VERSION }}
+          GLIB_VERSION: ${{ github.event.inputs.glib_version }}
+          ARCH: ${{ matrix.arch }}
+          ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
+          ALIYUN_NAME_SPACE: ${{ vars.ALIYUN_NAME_SPACE }}
+
+      # 上传 tarball 供 release job 下载(artifact 名带架构,避免冲突)
+      - name: Upload Binary Artifact (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: pxb-binary-${{ github.event.inputs.PXB_VERSION }}-glib${{ github.event.inputs.glib_version }}-${{ matrix.arch }}
+          path: output/*.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+
+  # ============================================================
+  # Job 2: 发 Release(两架构 tarball 挂同一个 Release tag)
+  # ============================================================
+  release:
+    needs: compile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pxb-binary-*
+          merge-multiple: true
+          path: release-assets/
+
+      - name: List Release Assets
+        run: |
+          echo "=== Release 产物列表 ==="
+          ls -lh release-assets/
+
+      - name: Create Release and Upload Binaries
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ github.event.inputs.xtrabackup_version }}-glib${{ github.event.inputs.glib_version }}
-          name: XtraBackup ${{ github.event.inputs.xtrabackup_version }} (glibc ${{ github.event.inputs.glib_version }})
+          tag_name: v${{ github.event.inputs.PXB_VERSION }}-glib${{ github.event.inputs.glib_version }}
+          name: XtraBackup ${{ github.event.inputs.PXB_VERSION }} (glibc ${{ github.event.inputs.glib_version }})
           body: |
-            ## Percona XtraBackup ${{ github.event.inputs.xtrabackup_version }}
+            ## Percona XtraBackup ${{ github.event.inputs.PXB_VERSION }}
 
             - **glibc 版本**: ${{ github.event.inputs.glib_version }}
-            - **构建环境**: glibc ${{ github.event.inputs.glib_version }} 基础镜像
+            - **构建架构**: linux/amd64, linux/arm64
 
             ### 产物
-            便携式二进制包，包含所有运行时依赖。
+            便携式二进制包,自带 lib/private 运行时依赖(ssl/crypto/libaio 等),跨发行版可移植。
+            文件名含架构与 glibc 版本后缀,按目标机选择对应包。
 
             ### 使用方式
             ```bash
-            tar -xzf percona-xtrabackup-*.tar.gz -C /usr/local/
+            tar -xzf percona-xtrabackup-*.glibc*.tar.gz -C /usr/local/
             export PATH="/usr/local/percona-xtrabackup-*/bin:$PATH"
             xtrabackup --version
             ```
-          files: output/*.tar.gz
+          files: release-assets/*.tar.gz
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ============================================================
-      # Step 4: 构建并推送镜像到 ACR（可选，默认执行）
-      # ============================================================
-      - name: Build and Push Image to ACR
-        if: ${{ github.event.inputs.build_image == 'true' }}
-        run: bash build/ci-build-image.sh
+  # ============================================================
+  # Job 3: 合并单架构镜像为多架构 manifest(仅 build_image=true)
+  # ============================================================
+  merge-manifest:
+    needs: compile
+    if: ${{ github.event.inputs.build_image == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge Multi-Arch Manifest
         env:
-          XTRABACKUP_VERSION: ${{ github.event.inputs.xtrabackup_version }}
-          GLIB_VERSION: ${{ github.event.inputs.glib_version }}
           ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
           ALIYUN_NAME_SPACE: ${{ vars.ALIYUN_NAME_SPACE }}
-          BASE_IMG_URL: ${{ vars.ALIYUN_REGISTRY }}/${{ vars.ALIYUN_NAME_SPACE }}
+          ALIYUN_REGISTRY_USER: ${{ vars.ALIYUN_REGISTRY_USER }}
+          ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+        run: |
+          PXB_VERSION="${{ github.event.inputs.PXB_VERSION }}"
+          GLIB_VERSION="${{ github.event.inputs.glib_version }}"
+          REPO="${ALIYUN_REGISTRY}/${ALIYUN_NAME_SPACE}"
+          MULTI_TAG="${REPO}/xtrabackup:${PXB_VERSION}-glib${GLIB_VERSION}"
+          AMD64_TAG="${REPO}/xtrabackup:${PXB_VERSION}-glib${GLIB_VERSION}-amd64"
+          ARM64_TAG="${REPO}/xtrabackup:${PXB_VERSION}-glib${GLIB_VERSION}-arm64"
 
-      # ============================================================
-      # Step 5: 清理
-      # ============================================================
+          echo "============================================"
+          echo "  合并多架构 manifest"
+          echo "============================================"
+          echo "  ${AMD64_TAG}"
+          echo "  ${ARM64_TAG}"
+          echo "  -> ${MULTI_TAG}"
+          echo "============================================"
+
+          docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ALIYUN_REGISTRY}"
+
+          # create 会自动拉取两个单架构 manifest;若 MULTI_TAG 已存在则先删
+          docker manifest rm "${MULTI_TAG}" 2>/dev/null || true
+          docker manifest create "${MULTI_TAG}" "${AMD64_TAG}" "${ARM64_TAG}"
+          docker manifest push "${MULTI_TAG}"
+
+          echo "✅ 多架构镜像推送成功: ${MULTI_TAG}"
+
       - name: Cleanup
         if: always()
         run: |
