@@ -65,11 +65,23 @@ COPY pxb-build-binary.sh /root/pxb-build-binary.sh
 #           Percona-XtraBackup-<完整版本>/source/tarball/percona-xtrabackup-<完整版本>.tar.gz
 # ----------------------------------------------------------------------------
 RUN set -e && \
+    echo "DIAG-1: proxy.sh 是否存在?" && \
+    ls -la /etc/profile.d/proxy.sh 2>&1 || echo "DIAG-1: proxy.sh 不存在" && \
+    echo "DIAG-2: 开始 source proxy.sh" && \
     source /etc/profile.d/proxy.sh 2>/dev/null || true && \
+    echo "DIAG-2: source 完成" && \
+    echo "DIAG-3: cut 测试" && \
     MAJOR_MINOR=$(echo "${PXB_VERSION}" | cut -d. -f1,2) && \
+    echo "DIAG-3: MAJOR_MINOR=${MAJOR_MINOR}" && \
     PXB_TARBALL="percona-xtrabackup-${PXB_VERSION}.tar.gz" && \
     PXB_URL="https://downloads.percona.com/downloads/Percona-XtraBackup-${MAJOR_MINOR}/Percona-XtraBackup-${PXB_VERSION}/source/tarball/${PXB_TARBALL}" && \
-    echo "==> 下载 PXB 源码: ${PXB_URL}" && \
+    echo "DIAG-4: 即将 curl, URL=${PXB_URL}" && \
+    echo "DIAG-4a: 容器内 DNS 解析 downloads.percona.com:" && \
+    getent ahosts downloads.percona.com 2>&1 | head -3 || echo "DIAG-4a: DNS 解析失败" && \
+    echo "DIAG-4b: curl 试探(前1MB, -v)" && \
+    curl -4 -v -fSL -r 0-1048576 -o /tmp/diag.bin "${PXB_URL}" 2>&1 | tail -15 && \
+    echo "DIAG-4b: curl 试探完成" && \
+    echo "DIAG-5: 正式下载" && \
     curl -4 -fSL --retry 5 --retry-delay 10 --retry-all-errors --connect-timeout 30 -o "/tmp/${PXB_TARBALL}" "${PXB_URL}" && \
     mkdir -p /root/percona-xtrabackup && \
     tar -xf "/tmp/${PXB_TARBALL}" -C /root/percona-xtrabackup --strip-components=1 && \
