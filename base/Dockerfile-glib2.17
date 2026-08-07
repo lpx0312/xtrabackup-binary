@@ -24,11 +24,25 @@ ARG TARGETARCH
 # CentOS 7 已 EOL，原 mirror.centos.org 不可用
 # ============================================================
 # Step A: 修复 CentOS-Base 源（禁 mirrorlist，用 centos-vault）
-RUN sed -i \
+# 注意 amd64 和 arm64 的 baseurl 模板不同:
+#   amd64: #baseurl=http://mirror.centos.org/centos/$releasever/...
+#   arm64: #baseurl=http://mirror.centos.org/altarch/$releasever/...
+# 且南大 vault 的目录结构也不同:
+#   amd64 -> centos-vault/centos/7.9.2009/os/x86_64/
+#   arm64 -> centos-vault/altarch/7.9.2009/os/aarch64/   (centos-vault/centos/.../aarch64 是 404)
+# 因此按 TARGETARCH 分流;sed 同时匹配 centos/ 和 altarch/ 两种原始前缀。
+RUN set -e && \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        VAULT_PATH="https://mirror.nju.edu.cn/centos-vault/altarch"; \
+    else \
+        VAULT_PATH="https://mirror.nju.edu.cn/centos-vault/centos"; \
+    fi && \
+    sed -i \
         -e 's|^mirrorlist=|#mirrorlist=|g' \
-        -e 's|^#baseurl=http://mirror.centos.org/centos/\$releasever|baseurl=https://mirror.nju.edu.cn/centos-vault/centos/\$releasever|g' \
-        -e 's|^# baseurl=http://mirror.centos.org/centos/\$releasever|baseurl=https://mirror.nju.edu.cn/centos-vault/centos/\$releasever|g' \
-        /etc/yum.repos.d/CentOS-Base.repo
+        -e "s|^# *baseurl=http://mirror.centos.org/\(centos\|altarch\)/\$releasever|baseurl=${VAULT_PATH}/\$releasever|g" \
+        /etc/yum.repos.d/CentOS-Base.repo && \
+    echo "==> [$TARGETARCH] CentOS-Base 已指向 ${VAULT_PATH}" && \
+    grep -E '^baseurl=' /etc/yum.repos.d/CentOS-Base.repo | head -3
 
 # Step B: 安装 EPEL + SCL 仓库，然后修复这两个源
 RUN yum install -y epel-release centos-release-scl && \
