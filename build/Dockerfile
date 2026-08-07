@@ -70,7 +70,7 @@ RUN set -e && \
     PXB_TARBALL="percona-xtrabackup-${PXB_VERSION}.tar.gz" && \
     PXB_URL="https://downloads.percona.com/downloads/Percona-XtraBackup-${MAJOR_MINOR}/Percona-XtraBackup-${PXB_VERSION}/source/tarball/${PXB_TARBALL}" && \
     echo "==> 下载 PXB 源码: ${PXB_URL}" && \
-    curl -fSL --retry 5 --retry-delay 10 -o "/tmp/${PXB_TARBALL}" "${PXB_URL}" && \
+    curl -4 -fSL --retry 5 --retry-delay 10 --retry-all-errors --connect-timeout 30 -o "/tmp/${PXB_TARBALL}" "${PXB_URL}" && \
     mkdir -p /root/percona-xtrabackup && \
     tar -xf "/tmp/${PXB_TARBALL}" -C /root/percona-xtrabackup --strip-components=1 && \
     rm -f "/tmp/${PXB_TARBALL}" && \
@@ -95,7 +95,7 @@ RUN set -e && \
     BOOST_URL="https://archives.boost.io/release/${BOOST_VER}/source/${BOOST_TARBALL}" && \
     echo "==> 从源码识别 boost: $BOOST_PKG (版本 $BOOST_VER)" && \
     echo "==> 下载 boost: ${BOOST_URL}" && \
-    curl -fSL --retry 5 --retry-delay 10 -o "/tmp/${BOOST_TARBALL}" "${BOOST_URL}" && \
+    curl -4 -fSL --retry 5 --retry-delay 10 --retry-all-errors --connect-timeout 30 -o "/tmp/${BOOST_TARBALL}" "${BOOST_URL}" && \
     . "$PXB_SRC_DIR/XB_VERSION" && \
     XB_VER="${XB_VERSION_MAJOR}.${XB_VERSION_MINOR}.${XB_VERSION_PATCH}" && \
     BOOST_DIR="/root/output/boost_${XB_VER}" && \
