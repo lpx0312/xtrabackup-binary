@@ -90,10 +90,14 @@ RUN set -e && \
     fi
 
 # 编译 + 打包(脚本自动识别 2.4 / 8.0+)
+# source gcc toolset:glib2.28 用 gcc-toolset-12,glib2.17 用 devtoolset
+# (基础镜像已建统一软链 /opt/rh/devtoolset -> devtoolset-{10,11},两架构通用)
 RUN chmod +x /root/pxb-build-binary.sh && \
     cd /root && \
     if [ -f /opt/rh/gcc-toolset-12/enable ]; then source /opt/rh/gcc-toolset-12/enable; fi && \
+    if [ -f /opt/rh/devtoolset/enable ];    then source /opt/rh/devtoolset/enable;    fi && \
     if [ -f /opt/rh/devtoolset-11/enable ]; then source /opt/rh/devtoolset-11/enable; fi && \
+    if [ -f /opt/rh/devtoolset-10/enable ]; then source /opt/rh/devtoolset-10/enable; fi && \
     bash pxb-build-binary.sh percona-xtrabackup output
 
 # 把产物放到固定位置方便提取

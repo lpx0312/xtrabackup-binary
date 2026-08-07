@@ -20,43 +20,45 @@ ARG PATCHELF_VERSION=0.19.1
 ARG TARGETARCH
 
 # ============================================================
-# 全部 yum 源修复：统一使用南大镜像 mirror.nju.edu.cn
-# CentOS 7 已 EOL，原 mirror.centos.org 不可用
+# yum 源修复:统一使用南大镜像 mirror.nju.edu.cn(CentOS 7 已 EOL)
+# amd64 / arm64 的 vault 路径不同,且 arm64 的 SCL 无 devtoolset-11-gcc,
+# 故按 TARGETARCH 分流:
+#   amd64 -> centos-vault/centos/...   + devtoolset-11
+#   arm64 -> centos-vault/altarch/...  + devtoolset-10
+# 实测原 sed 方案在 arm64/分组正则上会触发 "unknown option to s"(分隔符冲突),
+# 且替换命中率不稳定,故改用 printf 直接重写 repo 文件,确定性更高。
+# gpgcheck 全部关闭(部分 key 在 vault 下对不上,构建镜像场景可接受)。
 # ============================================================
-# Step A: 修复 CentOS-Base 源（禁 mirrorlist，用 centos-vault）
-# 注意 amd64 和 arm64 的 baseurl 模板不同:
-#   amd64: #baseurl=http://mirror.centos.org/centos/$releasever/...
-#   arm64: #baseurl=http://mirror.centos.org/altarch/$releasever/...
-# 且南大 vault 的目录结构也不同:
-#   amd64 -> centos-vault/centos/7.9.2009/os/x86_64/
-#   arm64 -> centos-vault/altarch/7.9.2009/os/aarch64/   (centos-vault/centos/.../aarch64 是 404)
-# 因此按 TARGETARCH 分流;sed 同时匹配 centos/ 和 altarch/ 两种原始前缀。
 RUN set -e && \
     if [ "$TARGETARCH" = "arm64" ]; then \
-        VAULT_PATH="https://mirror.nju.edu.cn/centos-vault/altarch"; \
+        VAULT="https://mirror.nju.edu.cn/centos-vault/altarch"; \
     else \
-        VAULT_PATH="https://mirror.nju.edu.cn/centos-vault/centos"; \
+        VAULT="https://mirror.nju.edu.cn/centos-vault/centos"; \
     fi && \
-    sed -i \
-        -e 's|^mirrorlist=|#mirrorlist=|g' \
-        -e "s|^# *baseurl=http://mirror.centos.org/\(centos\|altarch\)/\$releasever|baseurl=${VAULT_PATH}/\$releasever|g" \
-        /etc/yum.repos.d/CentOS-Base.repo && \
-    echo "==> [$TARGETARCH] CentOS-Base 已指向 ${VAULT_PATH}" && \
-    grep -E '^baseurl=' /etc/yum.repos.d/CentOS-Base.repo | head -3
+    printf '[base]\nname=CentOS-7 - Base\nbaseurl=%s/$releasever/os/$basearch/\ngpgcheck=0\n\n[updates]\nname=CentOS-7 - Updates\nbaseurl=%s/$releasever/updates/$basearch/\ngpgcheck=0\n\n[extras]\nname=CentOS-7 - Extras\nbaseurl=%s/$releasever/extras/$basearch/\ngpgcheck=0\n' \
+        "$VAULT" "$VAULT" "$VAULT" > /etc/yum.repos.d/CentOS-Base.repo && \
+    echo "==> [$TARGETARCH] CentOS-Base -> ${VAULT}"
 
-# Step B: 安装 EPEL + SCL 仓库，然后修复这两个源
-RUN yum install -y epel-release centos-release-scl && \
+# Step B: 安装 EPEL + SCL 仓库,然后重写这两个源到南大镜像
+RUN set -e && \
+    yum install -y epel-release centos-release-scl && \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        VAULT="https://mirror.nju.edu.cn/centos-vault/altarch"; \
+    else \
+        VAULT="https://mirror.nju.edu.cn/centos-vault/centos"; \
+    fi && \
     sed -i \
         -e 's|^mirrorlist=|#mirrorlist=|g' \
         -e 's|^metalink=|#metalink=|g' \
         -e 's|^#baseurl=http://download.fedoraproject.org/pub/epel/\(.*\)|baseurl=https://mirror.nju.edu.cn/epel/\1|g' \
         -e 's|^# baseurl=http://download.fedoraproject.org/pub/epel/\(.*\)|baseurl=https://mirror.nju.edu.cn/epel/\1|g' \
+        -e 's|^gpgcheck=1|gpgcheck=0|g' \
         /etc/yum.repos.d/epel.repo /etc/yum.repos.d/epel-testing.repo && \
-    sed -i \
-        -e 's|^mirrorlist=|#mirrorlist=|g' \
-        -e 's|^# *baseurl=http://mirror.centos.org/centos/7/sclo/|baseurl=https://mirror.nju.edu.cn/centos-vault/centos/7/sclo/|g' \
-        /etc/yum.repos.d/CentOS-SCLo-scl-rh.repo \
-        /etc/yum.repos.d/CentOS-SCLo-scl.repo
+    printf '[centos-sclo-rh]\nname=CentOS-7 - SCLo rh\nbaseurl=%s/$releasever/sclo/$basearch/rh/\ngpgcheck=0\nenabled=1\n' \
+        "$VAULT" > /etc/yum.repos.d/CentOS-SCLo-scl-rh.repo && \
+    printf '[centos-sclo-sclo]\nname=CentOS-7 - SCLo sclo\nbaseurl=%s/$releasever/sclo/$basearch/sclo/\ngpgcheck=0\nenabled=1\n' \
+        "$VAULT" > /etc/yum.repos.d/CentOS-SCLo-scl.repo && \
+    echo "==> [$TARGETARCH] SCLo repo -> ${VAULT}"
 
 # ============================================================
 # 安装全部编译依赖
@@ -93,11 +95,20 @@ RUN yum install -y \
         readline-devel \
         vim-common \
         zlib-devel \
-        zstd \
-        devtoolset-11-gcc \
-        devtoolset-11-gcc-c++ \
-        devtoolset-11-binutils \
-        devtoolset-11-annobin && \
+        zstd && \
+    # devtoolset 按 TARGETARCH 分流:
+    #   amd64 -> devtoolset-11(GCC 11.2.1)
+    #   arm64 -> devtoolset-10(GCC 10.2.1;aarch64 的 SCL 无 devtoolset-11-gcc 本体)
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        DTS=10; \
+    else \
+        DTS=11; \
+    fi && \
+    yum install -y \
+        devtoolset-${DTS}-gcc \
+        devtoolset-${DTS}-gcc-c++ \
+        devtoolset-${DTS}-binutils \
+        devtoolset-${DTS}-annobin && \
     yum clean all && \
     rm -rf /var/cache/yum
 
@@ -123,13 +134,21 @@ RUN set -e && \
 # cmake 软链 -> cmake3（兼容构建脚本直接调 cmake）
 RUN ln -sf /usr/bin/cmake3 /usr/local/bin/cmake
 
-# 全局启用 devtoolset-11 GCC 11.2.1
-RUN echo 'source /opt/rh/devtoolset-11/enable' > /etc/profile.d/devtoolset-11.sh && \
-    echo 'source /opt/rh/devtoolset-11/enable' >> /etc/bashrc
+# 全局启用 devtoolset(amd64=11 / arm64=10)。
+# DTS 版本由实际安装的目录决定,然后建统一软链 /opt/rh/devtoolset -> devtoolset-{10,11},
+# 这样下面的 ENV 和运行时 source 路径在两个架构上完全一致,无需按架构分支。
+RUN set -e && \
+    if   [ -d /opt/rh/devtoolset-11 ]; then DTS=11; \
+    elif [ -d /opt/rh/devtoolset-10 ]; then DTS=10; \
+    else echo "ERROR: 未找到 devtoolset 目录"; exit 1; fi && \
+    ln -sf "devtoolset-${DTS}" /opt/rh/devtoolset && \
+    echo "source /opt/rh/devtoolset/enable" > /etc/profile.d/devtoolset.sh && \
+    echo "source /opt/rh/devtoolset/enable" >> /etc/bashrc && \
+    echo "==> 全局启用 devtoolset-${DTS} (统一软链 /opt/rh/devtoolset)"
 
-ENV CC=/opt/rh/devtoolset-11/root/usr/bin/gcc \
-    CXX=/opt/rh/devtoolset-11/root/usr/bin/g++ \
-    FC=/opt/rh/devtoolset-11/root/usr/bin/gfortran
+ENV CC=/opt/rh/devtoolset/root/usr/bin/gcc \
+    CXX=/opt/rh/devtoolset/root/usr/bin/g++ \
+    FC=/opt/rh/devtoolset/root/usr/bin/gfortran
 
 # CentOS 7 glibc 版本
 RUN ldd --version | head -1
