@@ -1,8 +1,23 @@
 
 # CentOS 7 glibc 2.17 编译环境镜像
-# 构建: docker build -f Dockerfile-glib2.17 -t xtrabackup:base-glib-2.17 .
+# 构建示例:
+#   docker build -f Dockerfile-glib2.17 -t xtrabackup:base-glib-2.17 .
+#   # 内网走代理下载 patchelf:
+#   docker build -f Dockerfile-glib2.17 --build-arg GH_PROXY=https://gh.1102345.xyz/ -t xtrabackup:base-glib-2.17 .
+#   # 多架构(buildx 自动注入 TARGETARCH):
+#   docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile-glib2.17 -t xtrabackup:base-glib-2.17 .
+#
+# 可用 ARG:
+#   GH_PROXY        GitHub 下载代理前缀,默认空(直连)。例:https://gh.1102345.xyz/
+#   PATCHELF_VERSION patchelf 版本,默认 0.19.1
+#   TARGETARCH      buildx 自动注入(amd64/arm64),无需手动传
 # registry.cn-hangzhou.aliyuncs.com/lpx03/xtrabackup:base-glib-2.17
 FROM centos:7.9.2009
+
+# buildx 多架构:TARGETARCH 由 buildx 自动注入(amd64/arm64)
+ARG GH_PROXY=""
+ARG PATCHELF_VERSION=0.19.1
+ARG TARGETARCH
 
 # ============================================================
 # 全部 yum 源修复：统一使用南大镜像 mirror.nju.edu.cn
@@ -36,6 +51,7 @@ RUN yum install -y \
         autoconf \
         automake \
         bison \
+        bzip2 \
         cmake3 \
         cyrus-sasl-devel \
         file \
@@ -59,6 +75,7 @@ RUN yum install -y \
         openldap-devel \
         openssl-devel \
         patch \
+        procps-ng-devel \
         readline-devel \
         vim-common \
         zlib-devel \
@@ -66,10 +83,28 @@ RUN yum install -y \
         devtoolset-11-gcc \
         devtoolset-11-gcc-c++ \
         devtoolset-11-binutils \
-        devtoolset-11-annobin \
-        patchelf && \
+        devtoolset-11-annobin && \
     yum clean all && \
     rm -rf /var/cache/yum
+
+# 安装新版 patchelf。
+# yum/epel 源里的 patchelf 太老(0.x),对 xtrabackup 这种 256-notes 大 ELF
+# 处理 --force-rpath / --set-soname 会静默失败,必须用新版。
+# 架构映射:docker 用 amd64/arm64,patchelf 包名用 x86_64/aarch64
+RUN set -e && \
+    case "$TARGETARCH" in \
+        amd64)  PE_ARCH=x86_64  ;; \
+        arm64)  PE_ARCH=aarch64 ;; \
+        *)      PE_ARCH="$TARGETARCH" ;; \
+    esac && \
+    PE_URL="${GH_PROXY}https://github.com/NixOS/patchelf/releases/download/${PATCHELF_VERSION}/patchelf-${PATCHELF_VERSION}-${PE_ARCH}.tar.gz" && \
+    echo "==> 下载 patchelf: $PE_URL" && \
+    curl -sSL -o /tmp/patchelf.tar.gz "$PE_URL" && \
+    tar -xzf /tmp/patchelf.tar.gz -C /tmp && \
+    cp /tmp/bin/patchelf /usr/local/bin/patchelf && \
+    chmod +x /usr/local/bin/patchelf && \
+    rm -rf /tmp/patchelf* && \
+    patchelf --version
 
 # cmake 软链 -> cmake3（兼容构建脚本直接调 cmake）
 RUN ln -sf /usr/bin/cmake3 /usr/local/bin/cmake

@@ -1,24 +1,31 @@
 name: Build Base Image
 
+# 构建并推送 PXB 编译环境基础镜像(多架构)到 ACR
+# 触发:手动。参数:glib_version(决定用哪个 Dockerfile + 目标 tag)、architecture(可选单架构调试)。
+
 permissions:
   contents: read
 
 on:
   workflow_dispatch:
     inputs:
-      xtrabackup_version:
-        description: 'XtraBackup 版本（如 8.4.0-6）'
-        required: true
-        default: '8.4.0-6'
-        type: string
       glib_version:
-        description: 'glibc 版本（决定使用哪个基础镜像）'
+        description: 'glibc 版本(决定用哪个基础镜像 Dockerfile)'
         required: true
         type: choice
         options:
           - '2.28'
           - '2.17'
         default: '2.28'
+      architecture:
+        description: '目标架构(all=amd64+arm64 多架构,也可单架构调试)'
+        required: true
+        type: choice
+        options:
+          - all
+          - amd64
+          - arm64
+        default: all
 
 jobs:
   build:
@@ -32,37 +39,50 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Build and Push Base Image
-        run: |
-          GLIB_VERSION="${{ github.event.inputs.glib_version }}"
-          DOCKERFILE="Dockerfile-glib${GLIB_VERSION}"
-          TAG="xtrabackup:base-glib-${GLIB_VERSION}"
-
-          echo "=== 构建基础镜像: glibc ${GLIB_VERSION} ==="
-          echo "=== Dockerfile: base/${DOCKERFILE} ==="
-
-          ACR_URL="${ALIYUN_REGISTRY}"
-          ACR_NS="${ALIYUN_NAME_SPACE}"
-          TARGET="${ACR_URL}/${ACR_NS}/${TAG}"
-
-          echo "=== 目标镜像: ${TARGET} ==="
-          echo "=== 目标架构: linux/amd64,linux/arm64 ==="
-
-          docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ACR_URL}"
-
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            -t "${TARGET}" \
-            -f "base/${DOCKERFILE}" \
-            --no-cache \
-            --push \
-            base/
-
-          echo "✅ 基础镜像构建推送成功: ${TARGET}"
         env:
           ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
           ALIYUN_NAME_SPACE: ${{ vars.ALIYUN_NAME_SPACE }}
           ALIYUN_REGISTRY_USER: ${{ vars.ALIYUN_REGISTRY_USER }}
           ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+        run: |
+          GLIB_VERSION="${{ github.event.inputs.glib_version }}"
+          ARCHITECTURE="${{ github.event.inputs.architecture }}"
+
+          # 按 architecture 参数推导 buildx 平台列表
+          case "${ARCHITECTURE}" in
+            all)   PLATFORMS="linux/amd64,linux/arm64" ;;
+            amd64) PLATFORMS="linux/amd64" ;;
+            arm64) PLATFORMS="linux/arm64" ;;
+            *) echo "❌ 无效 architecture: ${ARCHITECTURE}"; exit 1 ;;
+          esac
+
+          ACR_URL="${ALIYUN_REGISTRY}"
+          ACR_NS="${ALIYUN_NAME_SPACE}"
+          TAG="xtrabackup:base-glib-${GLIB_VERSION}"
+          TARGET="${ACR_URL}/${ACR_NS}/${TAG}"
+
+          echo "============================================"
+          echo "  构建基础镜像"
+          echo "============================================"
+          echo "  glibc 版本:  ${GLIB_VERSION}"
+          echo "  Dockerfile:  base/Dockerfile-glib${GLIB_VERSION}"
+          echo "  目标镜像:    ${TARGET}"
+          echo "  平台:        ${PLATFORMS}"
+          echo "============================================"
+
+          # 登录 ACR
+          docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ACR_URL}"
+
+          # 多架构构建并推送
+          docker buildx build \
+            --platform "${PLATFORMS}" \
+            -t "${TARGET}" \
+            -f "base/Dockerfile-glib${GLIB_VERSION}" \
+            --no-cache \
+            --push \
+            base/
+
+          echo "✅ 基础镜像构建推送成功: ${TARGET}"
 
       - name: Cleanup
         if: always()
