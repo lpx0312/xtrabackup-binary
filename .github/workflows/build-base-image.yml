@@ -2,6 +2,11 @@ name: Build Base Image
 
 # 构建并推送 PXB 编译环境基础镜像(多架构)到 ACR
 # 触发:手动。参数:glib_version(决定用哪个 Dockerfile + 目标 tag)、architecture(可选单架构调试)。
+#
+# 结构(不再用单 job + --platform 多架构,因为 arm64 走 QEMU 极慢):
+#   build (matrix)   - amd64 在 ubuntu-latest(原生)、arm64 在 ubuntu-24.04-arm(原生,不走 QEMU)
+#                      各自构建单架构镜像,推带 -amd64/-arm64 后缀的 tag
+#   merge-manifest   - 仅 architecture=all 时跑,把两个单架构 tag 用 docker manifest 合并成多架构 tag
 
 permissions:
   contents: read
@@ -18,7 +23,7 @@ on:
           - '2.17'
         default: '2.28'
       architecture:
-        description: '目标架构(all=amd64+arm64 多架构,也可单架构调试)'
+        description: '目标架构(all=amd64+arm64 并行,也可单架构调试)'
         required: true
         type: choice
         options:
@@ -28,9 +33,23 @@ on:
         default: all
 
 jobs:
+  # ============================================================
+  # 按架构并行构建:amd64 在 amd64 原生 runner,arm64 在 arm64 原生 runner
+  # 各推一个带后缀的单架构 tag,不走 QEMU,速度原生
+  # ============================================================
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    # 按 architecture 输入过滤:选 amd64 就只跑 amd64,选 arm64 只跑 arm64,all 全跑
+    if: ${{ github.event.inputs.architecture == 'all' || github.event.inputs.architecture == matrix.arch }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -38,7 +57,7 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup
 
-      - name: Build and Push Base Image
+      - name: Build and Push Base Image (${{ matrix.arch }})
         env:
           ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
           ALIYUN_NAME_SPACE: ${{ vars.ALIYUN_NAME_SPACE }}
@@ -46,46 +65,76 @@ jobs:
           ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
         run: |
           GLIB_VERSION="${{ github.event.inputs.glib_version }}"
-          ARCHITECTURE="${{ github.event.inputs.architecture }}"
-
-          # 按 architecture 参数推导 buildx 平台列表
-          case "${ARCHITECTURE}" in
-            all)   PLATFORMS="linux/amd64,linux/arm64" ;;
-            amd64) PLATFORMS="linux/amd64" ;;
-            arm64) PLATFORMS="linux/arm64" ;;
-            *) echo "❌ 无效 architecture: ${ARCHITECTURE}"; exit 1 ;;
-          esac
-
+          ARCH="${{ matrix.arch }}"
           ACR_URL="${ALIYUN_REGISTRY}"
           ACR_NS="${ALIYUN_NAME_SPACE}"
-          TAG="xtrabackup:base-glib-${GLIB_VERSION}"
+          # 单架构 tag 带后缀;合并成不带后缀的多架构 tag 由 merge-manifest job 处理
+          TAG="xtrabackup:base-glib-${GLIB_VERSION}-${ARCH}"
           TARGET="${ACR_URL}/${ACR_NS}/${TAG}"
 
           echo "============================================"
-          echo "  构建基础镜像"
+          echo "  构建基础镜像(${ARCH}, 原生 runner)"
           echo "============================================"
           echo "  glibc 版本:  ${GLIB_VERSION}"
           echo "  Dockerfile:  base/Dockerfile-glib${GLIB_VERSION}"
           echo "  目标镜像:    ${TARGET}"
-          echo "  平台:        ${PLATFORMS}"
+          echo "  平台:        linux/${ARCH}"
           echo "============================================"
 
           # 登录 ACR
           docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ACR_URL}"
 
-          # 多架构构建并推送
+          # 单架构构建并推送(原生 runner 同架构,不经过 QEMU,速度快)
           docker buildx build \
-            --platform "${PLATFORMS}" \
+            --platform "linux/${ARCH}" \
             -t "${TARGET}" \
             -f "base/Dockerfile-glib${GLIB_VERSION}" \
             --no-cache \
             --push \
             base/
 
-          echo "✅ 基础镜像构建推送成功: ${TARGET}"
+          echo "✅ 单架构基础镜像构建推送成功: ${TARGET}"
 
       - name: Cleanup
         if: always()
         run: |
           docker image prune -af || true
           docker builder prune -af || true
+
+  # ============================================================
+  # 合并两个单架构 tag 为多架构 manifest(仅 architecture=all 时)
+  # ============================================================
+  merge-manifest:
+    needs: build
+    if: ${{ github.event.inputs.architecture == 'all' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge Multi-Arch Manifest
+        env:
+          ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
+          ALIYUN_NAME_SPACE: ${{ vars.ALIYUN_NAME_SPACE }}
+          ALIYUN_REGISTRY_USER: ${{ vars.ALIYUN_REGISTRY_USER }}
+          ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+        run: |
+          GLIB_VERSION="${{ github.event.inputs.glib_version }}"
+          REPO="${ALIYUN_REGISTRY}/${ALIYUN_NAME_SPACE}"
+          MULTI_TAG="${REPO}/xtrabackup:base-glib-${GLIB_VERSION}"
+          AMD64_TAG="${REPO}/xtrabackup:base-glib-${GLIB_VERSION}-amd64"
+          ARM64_TAG="${REPO}/xtrabackup:base-glib-${GLIB_VERSION}-arm64"
+
+          echo "============================================"
+          echo "  合并多架构 manifest"
+          echo "============================================"
+          echo "  ${AMD64_TAG}"
+          echo "  ${ARM64_TAG}"
+          echo "  -> ${MULTI_TAG}"
+          echo "============================================"
+
+          docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ALIYUN_REGISTRY}"
+
+          # create 自动拉取两个单架构 manifest;若 MULTI_TAG 已存在则先删
+          docker manifest rm "${MULTI_TAG}" 2>/dev/null || true
+          docker manifest create "${MULTI_TAG}" "${AMD64_TAG}" "${ARM64_TAG}"
+          docker manifest push "${MULTI_TAG}"
+
+          echo "✅ 多架构基础镜像推送成功: ${MULTI_TAG}"
