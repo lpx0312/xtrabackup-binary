@@ -1,0 +1,71 @@
+name: Build Base Image
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      xtrabackup_version:
+        description: 'XtraBackup 版本（如 8.4.0-6）'
+        required: true
+        default: '8.4.0-6'
+        type: string
+      glib_version:
+        description: 'glibc 版本（决定使用哪个基础镜像）'
+        required: true
+        type: choice
+        options:
+          - '2.28'
+          - '2.17'
+        default: '2.28'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup
+
+      - name: Build and Push Base Image
+        run: |
+          GLIB_VERSION="${{ github.event.inputs.glib_version }}"
+          DOCKERFILE="Dockerfile-glib${GLIB_VERSION}"
+          TAG="xtrabackup:base-glib-${GLIB_VERSION}"
+
+          echo "=== 构建基础镜像: glibc ${GLIB_VERSION} ==="
+          echo "=== Dockerfile: base/${DOCKERFILE} ==="
+
+          ACR_URL="${ALIYUN_REGISTRY}"
+          ACR_NS="${ALIYUN_NAME_SPACE}"
+          TARGET="${ACR_URL}/${ACR_NS}/${TAG}"
+
+          echo "=== 目标镜像: ${TARGET} ==="
+          echo "=== 目标架构: linux/amd64,linux/arm64 ==="
+
+          docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ACR_URL}"
+
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -t "${TARGET}" \
+            -f "base/${DOCKERFILE}" \
+            --no-cache \
+            --push \
+            base/
+
+          echo "✅ 基础镜像构建推送成功: ${TARGET}"
+        env:
+          ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
+          ALIYUN_NAME_SPACE: ${{ vars.ALIYUN_NAME_SPACE }}
+          ALIYUN_REGISTRY_USER: ${{ vars.ALIYUN_REGISTRY_USER }}
+          ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker image prune -af || true
+          docker builder prune -af || true

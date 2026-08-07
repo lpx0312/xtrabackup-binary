@@ -1,0 +1,45 @@
+name: 'Setup Build Environment'
+description: '磁盘清理、Docker 重启、QEMU、Buildx 设置'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Before freeing up disk space
+      run: |
+        echo "Before freeing up disk space"
+        echo "============================================================"
+        df -hT
+        echo "============================================================"
+      shell: bash
+
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 4096
+        swap-size-mb: 256
+        remove-dotnet: 'true'
+        remove-haskell: 'true'
+        remove-android: 'true'
+        remove-codeql: 'true'
+        build-mount-path: '/var/lib/docker/'
+        overprovision-lvm: 'true'
+
+    - name: Restart docker
+      run: sudo service docker restart
+      shell: bash
+
+    - name: Free up disk space complete
+      run: |
+        echo "Free up disk space complete"
+        echo "============================================================"
+        df -hT
+        echo "============================================================"
+      shell: bash
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3.7.0
+      with:
+        image: tonistiigi/binfmt:qemu-v10.2.1-65
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3

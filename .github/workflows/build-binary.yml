@@ -1,0 +1,108 @@
+name: Build Binary & Release
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      xtrabackup_version:
+        description: 'XtraBackup 版本（如 8.4.0-6）'
+        required: true
+        default: '8.4.0-6'
+        type: string
+      glib_version:
+        description: 'glibc 版本（决定使用哪个基础镜像）'
+        required: true
+        type: choice
+        options:
+          - '2.28'
+          - '2.17'
+        default: '2.28'
+      build_image:
+        description: '是否制作 Docker 镜像并推送到 ACR'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup
+
+      # ============================================================
+      # Step 1: 登录 ACR
+      # ============================================================
+      - name: Login ACR
+        run: |
+          docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ALIYUN_REGISTRY}"
+        env:
+          ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
+          ALIYUN_REGISTRY_USER: ${{ vars.ALIYUN_REGISTRY_USER }}
+          ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      # ============================================================
+      # Step 2: 编译二进制（必须执行）
+      # ============================================================
+      - name: Build Binary
+        run: bash build/ci-build-binary.sh
+        env:
+          XTRABACKUP_VERSION: ${{ github.event.inputs.xtrabackup_version }}
+          GLIB_VERSION: ${{ github.event.inputs.glib_version }}
+          BASE_IMG_URL: ${{ vars.ALIYUN_REGISTRY }}/${{ vars.ALIYUN_NAME_SPACE }}
+
+      # ============================================================
+      # Step 3: 上传产物到 GitHub Release（必须执行）
+      # ============================================================
+      - name: Create Release and Upload Binary
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.event.inputs.xtrabackup_version }}-glib${{ github.event.inputs.glib_version }}
+          name: XtraBackup ${{ github.event.inputs.xtrabackup_version }} (glibc ${{ github.event.inputs.glib_version }})
+          body: |
+            ## Percona XtraBackup ${{ github.event.inputs.xtrabackup_version }}
+
+            - **glibc 版本**: ${{ github.event.inputs.glib_version }}
+            - **构建环境**: glibc ${{ github.event.inputs.glib_version }} 基础镜像
+
+            ### 产物
+            便携式二进制包，包含所有运行时依赖。
+
+            ### 使用方式
+            ```bash
+            tar -xzf percona-xtrabackup-*.tar.gz -C /usr/local/
+            export PATH="/usr/local/percona-xtrabackup-*/bin:$PATH"
+            xtrabackup --version
+            ```
+          files: output/*.tar.gz
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ============================================================
+      # Step 4: 构建并推送镜像到 ACR（可选，默认执行）
+      # ============================================================
+      - name: Build and Push Image to ACR
+        if: ${{ github.event.inputs.build_image == 'true' }}
+        run: bash build/ci-build-image.sh
+        env:
+          XTRABACKUP_VERSION: ${{ github.event.inputs.xtrabackup_version }}
+          GLIB_VERSION: ${{ github.event.inputs.glib_version }}
+          ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
+          ALIYUN_NAME_SPACE: ${{ vars.ALIYUN_NAME_SPACE }}
+          BASE_IMG_URL: ${{ vars.ALIYUN_REGISTRY }}/${{ vars.ALIYUN_NAME_SPACE }}
+
+      # ============================================================
+      # Step 5: 清理
+      # ============================================================
+      - name: Cleanup
+        if: always()
+        run: |
+          docker image prune -af || true
+          docker builder prune -af || true
