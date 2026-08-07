@@ -1,0 +1,48 @@
+name: Diagnose Network
+
+# 临时诊断 workflow: 实测 GitHub runner 能否访问 PXB/boost 下载站
+# 拿到结论后删除
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: DNS 解析 downloads.percona.com
+        run: |
+          echo "=== getent (IPv4 + IPv6) ==="
+          getent ahosts downloads.percona.com
+          echo
+          echo "=== dig A (IPv4) ==="
+          dig +short A downloads.percona.com
+          echo "=== dig AAAA (IPv6) ==="
+          dig +short AAAA downloads.percona.com
+
+      - name: curl PXB URL (默认, 仅 1MB)
+        run: |
+          URL="https://downloads.percona.com/downloads/Percona-XtraBackup-8.0/Percona-XtraBackup-8.0.35-36/source/tarball/percona-xtrabackup-8.0.35-36.tar.gz"
+          echo "=== curl 默认行为 (下前 1MB) ==="
+          curl -fSL -r 0-1048575 -o /tmp/pxb.bin "$URL" -w "\nHTTP=%{http_code} IP=%{remote_ip} 时间=%{time_total}s 大小=%{size_download}\n" 2>&1 | tail -5
+          echo "curl 退出码: ${PIPESTATUS[0]}"
+          echo
+          echo "=== curl 强制 IPv4 ==="
+          curl -4 -fSL -r 0-1048575 -o /tmp/pxb4.bin "$URL" -w "\nHTTP=%{http_code} IP=%{remote_ip}\n" 2>&1 | tail -5
+          echo "curl -4 退出码: ${PIPESTATUS[0]}"
+
+      - name: curl boost URL (对照)
+        run: |
+          URL="https://archives.boost.io/release/1.77.0/source/boost_1_77_0.tar.bz2"
+          echo "=== curl boost (前 1MB) ==="
+          curl -fSL -r 0-1048575 -o /tmp/boost.bin "$URL" -w "\nHTTP=%{http_code} IP=%{remote_ip} 时间=%{time_total}s\n" 2>&1 | tail -5
+          echo "curl 退出码: ${PIPESTATUS[0]}"
+
+      - name: curl HEAD (看完整连接过程)
+        run: |
+          URL="https://downloads.percona.com/downloads/Percona-XtraBackup-8.0/Percona-XtraBackup-8.0.35-36/source/tarball/percona-xtrabackup-8.0.35-36.tar.gz"
+          echo "=== curl -v (verbose, 看 TLS/连接详情) ==="
+          curl -v -I --max-time 30 "$URL" 2>&1 | head -30
