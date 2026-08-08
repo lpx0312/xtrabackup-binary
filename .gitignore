@@ -5,6 +5,11 @@
 output/
 out-raw/
 
+# 二进制 tarball(任何位置都不入库:编译产物、docker cp 提取的、下载的等)
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+
 # 离线构建的源码/boost 包(由 build-offline/sources/download.sh 按需下载,不入库)
 build-offline/sources/*.tar.gz
 build-offline/sources/*.tar.bz2
