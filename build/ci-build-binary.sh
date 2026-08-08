@@ -47,7 +47,12 @@ docker pull "${BASE_IMG_URL}/${BASE_SYSTEM_VERSION}"
 # (foreign arch 不能用 --load,故统一用 local 输出;amd64/arm64 走同一套逻辑)
 echo ""
 echo ">>> 构建编译镜像并提取产物(${PLATFORM})..."
-WORKDIR="$(mktemp -d)"
+# WORKDIR 放在 workspace 下而非 /tmp。原因:easimon/maximize-build-space 会把大 LVM
+# 卷挂到 /var/lib/docker,但 /tmp 仍在 root 保留卷上,buildx 的 --output type=local
+# 在 /tmp 下创建同步标记文件(enable)时会 permission denied。workspace 目录权限稳定。
+# 显式 chmod 777 确保 buildkitd 进程(可能以非当前用户运行)能写入。
+WORKDIR="$(mktemp -d -p "${PWD}" tmp-output-XXXX)"
+chmod 777 "${WORKDIR}"
 docker buildx build \
     --platform "${PLATFORM}" \
     --build-arg "BASE_IMG_URL=${BASE_IMG_URL}" \
