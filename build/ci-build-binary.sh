@@ -43,47 +43,53 @@ echo ""
 echo ">>> 拉取基础镜像..."
 docker pull "${BASE_IMG_URL}/${BASE_SYSTEM_VERSION}"
 
-# 单架构构建,用 --output type=local 把 /root/pxb-final.tar.gz 直接提取到本地。
-# (foreign arch 不能用 --load,故统一用 local 输出;amd64/arm64 走同一套逻辑)
+# 单架构构建,--load 载入本地 docker,再用 docker create + docker cp 提取产物。
+# 之前用 --output type=local 直接提取,但 buildx 的 docker-container 驱动下 buildkitd
+# 跑在独立容器里,经 easimon/maximize-build-space 重挂载 /var/lib/docker 后,往 host
+# 写同步标记文件(openat enable)会 permission denied。--load 走 docker 标准存储,
+# 再 docker cp 提取,完全绕开 buildx local exporter,最可靠。
+# (前提:runner 与目标镜像同架构 —— 已由原生 runner 保证:amd64 job 用 ubuntu-latest,
+#  arm64 job 用 ubuntu-24.04-arm)
 echo ""
 echo ">>> 构建编译镜像并提取产物(${PLATFORM})..."
-# WORKDIR 放在 workspace 下而非 /tmp。原因:easimon/maximize-build-space 会把大 LVM
-# 卷挂到 /var/lib/docker,但 /tmp 仍在 root 保留卷上,buildx 的 --output type=local
-# 在 /tmp 下创建同步标记文件(enable)时会 permission denied。workspace 目录权限稳定。
-# 显式 chmod 777 确保 buildkitd 进程(可能以非当前用户运行)能写入。
-WORKDIR="$(mktemp -d -p "${PWD}" tmp-output-XXXX)"
-chmod 777 "${WORKDIR}"
 docker buildx build \
-    --platform "${PLATFORM}" \
+    --load \
     --build-arg "BASE_IMG_URL=${BASE_IMG_URL}" \
     --build-arg "BASE_SYSTEM_VERSION=${BASE_SYSTEM_VERSION}" \
     --build-arg "PXB_VERSION=${PXB_VERSION}" \
     -t "${BUILD_IMAGE_TAG}" \
     -f build/Dockerfile \
-    --output type=local,dest="${WORKDIR}" \
     build/
 
-# 编译镜像在最后一步会把产物复制到 /root/pxb-final.tar.gz
-if [ ! -f "${WORKDIR}/root/pxb-final.tar.gz" ]; then
-    echo "❌ 构建完成但未找到 ${WORKDIR}/root/pxb-final.tar.gz"
-    echo "    构建输出目录内容:"
-    ls -laR "${WORKDIR}/root" 2>/dev/null | head -40 || true
-    rm -rf "${WORKDIR}"
-    exit 1
-fi
-
-# 整理到 output/(artifact 上传 + Release 用)
+# 从镜像提取产物:docker create + docker cp(最标准的提取方式)
+# 镜像内产物位置:
+#   /root/output/percona-xtrabackup-*.glibc*.tar.gz  ← 真实命名(Dockerfile 产出)
+#   /root/pxb-final.tar.gz                            ← 上面的固定名副本
+EXTRACT_CID="pxb-extract-$$"
 echo ""
-echo ">>> 整理产物到 output/..."
+echo ">>> 从镜像提取产物..."
+docker create --name "${EXTRACT_CID}" "${BUILD_IMAGE_TAG}" /bin/true >/dev/null
+
+# 先取真实命名的 tarball;失败则兜底取 pxb-final.tar.gz
 mkdir -p output
-TARBALL="$(basename "${WORKDIR}/root/pxb-final.tar.gz")"
-# pxb-final.tar.gz 是固定名,改成真实产物名(从镜像内 output/ 目录取)
-REAL_TARBALL="$(ls "${WORKDIR}/root/output/"percona-xtrabackup-*.tar.gz 2>/dev/null | head -1 || true)"
-if [ -n "${REAL_TARBALL}" ]; then
-    cp "${REAL_TARBALL}" "output/"
-else
-    # 兜底:用 pxb-final.tar.gz
-    cp "${WORKDIR}/root/pxb-final.tar.gz" "output/percona-xtrabackup-${PXB_VERSION}-glib${GLIB_VERSION}-${ARCH}.tar.gz"
+docker cp "${EXTRACT_CID}:/root/output/." output/ 2>/dev/null || true
+REAL_TARBALL="$(ls output/percona-xtrabackup-*.tar.gz 2>/dev/null | head -1 || true)"
+if [ -z "${REAL_TARBALL}" ]; then
+    echo ">>> /root/output/ 无真实命名 tarball,兜底取 /root/pxb-final.tar.gz"
+    docker cp "${EXTRACT_CID}:/root/pxb-final.tar.gz" \
+        "output/percona-xtrabackup-${PXB_VERSION}-glib${GLIB_VERSION}-${ARCH}.tar.gz" 2>/dev/null || true
+fi
+docker rm -f "${EXTRACT_CID}" >/dev/null
+
+# 只保留 tarball(清理 docker cp 可能带出的 boost 目录等无关内容)
+find output/ ! -name '*.tar.gz' -type f -delete 2>/dev/null || true
+find output/ -type d -empty -delete 2>/dev/null || true
+
+# 最终校验
+REAL_TARBALL="$(ls output/percona-xtrabackup-*.tar.gz 2>/dev/null | head -1 || true)"
+if [ -z "${REAL_TARBALL}" ]; then
+    echo "❌ 未能从镜像提取任何 percona-xtrabackup-*.tar.gz 产物"
+    exit 1
 fi
 
 echo ""
@@ -93,5 +99,5 @@ echo "============================================"
 ls -lh output/
 echo "============================================"
 
-# 清理
-rm -rf "${WORKDIR}"
+# 清理编译镜像(腾出空间,避免 runner 磁盘爆)
+docker rmi "${BUILD_IMAGE_TAG}" 2>/dev/null || true
