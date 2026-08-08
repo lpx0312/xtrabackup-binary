@@ -16,7 +16,8 @@ set -euo pipefail
 #   ALIYUN_REGISTRY     - ACR 地址(如 registry.cn-hangzhou.aliyuncs.com)
 #   ALIYUN_NAME_SPACE   - ACR 命名空间(如 lpx03)
 #
-# 依赖:output/ 下已有该架构的 tarball(由 ci-build-binary.sh 产出)
+# 依赖:output/ 下已有该架构的 tarball(由 ci-build-binary.sh 产出,
+#       或从已发布的 GitHub Release 下载 —— 见 build-image.yml)
 # ============================================================
 
 PXB_VERSION="${PXB_VERSION:?ERROR: 必须设置 PXB_VERSION}"

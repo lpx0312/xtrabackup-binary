@@ -1,15 +1,15 @@
 name: Build Binary & Release
 
-# CI 流水线:手动触发,按架构矩阵并行编译 PXB 二进制 → 发 Release → (可选)推多架构镜像。
+# CI 流水线:手动触发,按架构矩阵并行编译 PXB 二进制 → 发 Release。
+# 职责单一:只编译 + 发版,不做 Docker 镜像。
+# 镜像构建见 build-image.yml(从本工作流发布的 Release 拉取 tarball 后打镜像)。
 #
 # 入参:
 #   PXB_VERSION   - PXB 完整版本号(如 8.0.35-36、2.4.29),原样透传给 build/Dockerfile 的 ARG PXB_VERSION
 #   glib_version  - glibc 版本(2.28/2.17),决定用哪个基础镜像
-#   build_image   - 是否制作并推送 Docker 镜像到 ACR(默认 true)
 #
 # 流程:
-#   compile (matrix: amd64, arm64)  →  release           (必跑:发 Release,挂两架构 tarball)
-#                                   →  merge-manifest    (仅 build_image=true:合并多架构镜像)
+#   compile (matrix: amd64, arm64)  →  release (必跑:发 Release,挂两架构 tarball)
 
 permissions:
   contents: write
@@ -30,15 +30,10 @@ on:
           - '2.28'
           - '2.17'
         default: '2.28'
-      build_image:
-        description: '是否制作 Docker 镜像并推送到 ACR(单架构 tag + 合并多架构 tag)'
-        required: true
-        type: boolean
-        default: true
 
 jobs:
   # ============================================================
-  # Job 1: 按架构矩阵并行编译 + (可选)推单架构镜像
+  # Job 1: 按架构矩阵并行编译(纯编译,不碰镜像)
   # ============================================================
   compile:
     runs-on: ubuntu-latest
@@ -54,15 +49,8 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup
 
-      - name: Login ACR
-        run: |
-          docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ALIYUN_REGISTRY}"
-        env:
-          ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
-          ALIYUN_REGISTRY_USER: ${{ vars.ALIYUN_REGISTRY_USER }}
-          ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
-
       # 编译二进制(单架构),产物输出到 output/
+      # 只需匿名拉公开基础镜像,不登录 ACR
       - name: Build Binary (${{ matrix.arch }})
         run: bash build/ci-build-binary.sh
         env:
@@ -70,17 +58,6 @@ jobs:
           GLIB_VERSION: ${{ github.event.inputs.glib_version }}
           ARCH: ${{ matrix.arch }}
           BASE_IMG_URL: ${{ vars.ALIYUN_REGISTRY }}/${{ vars.ALIYUN_NAME_SPACE }}
-
-      # 制作并推送单架构镜像(可选,默认开)
-      - name: Build and Push Image (${{ matrix.arch }})
-        if: ${{ github.event.inputs.build_image == 'true' }}
-        run: bash build/ci-build-image.sh
-        env:
-          PXB_VERSION: ${{ github.event.inputs.PXB_VERSION }}
-          GLIB_VERSION: ${{ github.event.inputs.glib_version }}
-          ARCH: ${{ matrix.arch }}
-          ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
-          ALIYUN_NAME_SPACE: ${{ vars.ALIYUN_NAME_SPACE }}
 
       # 上传 tarball 供 release job 下载(artifact 名带架构,避免冲突)
       - name: Upload Binary Artifact (${{ matrix.arch }})
@@ -135,49 +112,3 @@ jobs:
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # ============================================================
-  # Job 3: 合并单架构镜像为多架构 manifest(仅 build_image=true)
-  # ============================================================
-  merge-manifest:
-    needs: compile
-    if: ${{ github.event.inputs.build_image == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Merge Multi-Arch Manifest
-        env:
-          ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
-          ALIYUN_NAME_SPACE: ${{ vars.ALIYUN_NAME_SPACE }}
-          ALIYUN_REGISTRY_USER: ${{ vars.ALIYUN_REGISTRY_USER }}
-          ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
-        run: |
-          PXB_VERSION="${{ github.event.inputs.PXB_VERSION }}"
-          GLIB_VERSION="${{ github.event.inputs.glib_version }}"
-          REPO="${ALIYUN_REGISTRY}/${ALIYUN_NAME_SPACE}"
-          MULTI_TAG="${REPO}/xtrabackup:${PXB_VERSION}-glib${GLIB_VERSION}"
-          AMD64_TAG="${REPO}/xtrabackup:${PXB_VERSION}-glib${GLIB_VERSION}-amd64"
-          ARM64_TAG="${REPO}/xtrabackup:${PXB_VERSION}-glib${GLIB_VERSION}-arm64"
-
-          echo "============================================"
-          echo "  合并多架构 manifest"
-          echo "============================================"
-          echo "  ${AMD64_TAG}"
-          echo "  ${ARM64_TAG}"
-          echo "  -> ${MULTI_TAG}"
-          echo "============================================"
-
-          docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ALIYUN_REGISTRY}"
-
-          # 用 buildx imagetools 合并(不是 docker manifest create)。
-          # 原因:buildx --push 推的单架构镜像也是 manifest list 格式,
-          # docker manifest create 不接受 manifest list 作为输入(报 "is a manifest list")。
-          # imagetools create 专门处理 manifest list,能正确合并多架构。
-          docker buildx imagetools create -t "${MULTI_TAG}" "${AMD64_TAG}" "${ARM64_TAG}"
-
-          echo "✅ 多架构镜像推送成功: ${MULTI_TAG}"
-
-      - name: Cleanup
-        if: always()
-        run: |
-          docker image prune -af || true
-          docker builder prune -af || true
