@@ -25,7 +25,8 @@ xtrabackup-binary/
 ├── .github/
 │   ├── workflows/
 │   │   ├── build-base-image.yml  # 手动触发: 构建并推送基础镜像(多架构)到 ACR
-│   │   └── build-binary.yml      # 手动触发: 编译 → 发 Release → (可选)推发布镜像
+│   │   ├── build-binary.yml      # 手动触发: 编译 → 发 Release(只做二进制,不碰镜像)
+│   │   └── build-image.yml       # 手动触发: 从 Release 拉 tarball → 打 Docker 镜像 → 推 ACR
 │   └── actions/setup/            # 复合 action: 清磁盘 + QEMU + buildx
 ├── .gitattributes                # 强制 *.sh/*.yml 用 LF 换行
 └── AGENTS.md                     # 本文档
@@ -53,49 +54,85 @@ xtrabackup-binary/
 
 ## CI/CD 流水线
 
-GitHub Actions 提供两条手动触发的流水线(`workflow_dispatch`),均在 `ubuntu-latest` 上跑,
-经 `.github/actions/setup` 做磁盘清理 + QEMU + buildx。**多架构**通过两种方式实现:基础镜像
-直接 `buildx --platform amd64,arm64`;应用流水线用 `strategy.matrix` 按架构并行编译(amd64/arm64
+GitHub Actions 提供三条手动触发的流水线(`workflow_dispatch`),均在 `ubuntu-latest` 上跑,
+经 `.github/actions/setup` 做磁盘清理 + QEMU + buildx。**职责拆分**:基础镜像构建、二进制编译、
+镜像打包各成独立流水线,互不耦合。**多架构**通过两种方式实现:基础镜像直接
+`buildx --platform amd64,arm64`;应用流水线用 `strategy.matrix` 按架构并行(amd64/arm64
 各自独立 job,arm64 走 QEMU,不互相阻塞)。
+
+```
+build-base-image.yml          build-binary.yml              build-image.yml
+  base 镜像(编译环境)          二进制 tarball                  发布镜像(Docker)
+  ──────────────────          ──────────────────            ──────────────────
+  build-amd64 ─┐              compile(amd64) ─┐             build-image(amd64) ─┐
+  build-arm64 ─┼→ merge       compile(arm64) ─┼→ release    build-image(arm64) ─┼→ merge-manifest
+                              (只编译+发版,    (挂两架构       (从 Release 拉       (合并多架构 tag)
+                               不碰镜像)        tarball)        tarball 再打镜像)
+```
 
 ### 1. `build-base-image.yml` —— 构建并推送基础镜像
 
-- **输入**:`glib_version`(`2.28` / `2.17`)、`architecture`(`all` / `amd64` / `arm64`,默认 all)。
+- **输入**:`glib_version`(`2.28` / `2.17`)、`architecture`(`all` / `amd64` / `arm64`,默认 all)、
+  `zone`(区域加速:空=官方源;`cn`=南大镜像,国内 CI 加速 yum/DNF,默认空)。
 - **行为**:`docker buildx build --platform <按 architecture 推导> -f base/Dockerfile-glib${GLIB}
-  -t ${ACR}/${NS}/xtrabackup:base-glib-${GLIB} --push base/`。
-- **用途**:`base/` 改动后跑一次,把新基础镜像(多架构)推到 ACR,供 `build/` 流水线拉取。
+  [--build-arg ZONE=cn] -t ${ACR}/${NS}/xtrabackup:base-glib-${GLIB} --push base/`。
+- **用途**:`base/` 改动后跑一次,把新基础镜像(多架构)推到 ACR,供 `build-binary` 流水线拉取。
 
-### 2. `build-binary.yml` —— 编译 + 发版 + (可选)多架构镜像
+### 2. `build-binary.yml` —— 编译 + 发版(只做二进制,不碰镜像)
 
-入参:`PXB_VERSION`(完整版本号,描述提示 8.0.35-36/2.4.29)、`glib_version`、`build_image`(默认 true)。
-三个 job:
+入参:`PXB_VERSION`(完整版本号,描述提示 8.0.35-36/2.4.29)、`glib_version`。
+两个 job,**纯编译 + 发 Release**,镜像构建已拆到 `build-image.yml`:
 
 | job | 触发条件 | 职责 |
 |-----|---------|------|
-| `compile` (matrix: amd64, arm64, fail-fast:false) | 必跑 | 调 `ci-build-binary.sh` 单架构编译 → 提取 tarball 到 artifact;若 `build_image=true` 再调 `ci-build-image.sh` 推**带后缀**的单架构镜像 |
+| `compile` (matrix: amd64, arm64, fail-fast:false) | 必跑 | 调 `ci-build-binary.sh` 单架构编译 → `--output type=local` 提取 tarball 到 `output/` → `upload-artifact`。**不登录 ACR**(只需匿名拉公开基础镜像) |
 | `release` (`needs: compile`) | 必跑 | `download-artifact` 合并两架构 → `softprops/action-gh-release@v2` 发到同一 tag `v<PXB>-glib<glib>` |
-| `merge-manifest` (`needs: compile`, `if: build_image`) | 仅 `build_image=true` | `docker manifest create/push` 把 `-amd64` + `-arm64` 合并成不带后缀的多架构 tag |
-
-**镜像 tag 规则**:
-```
-<ACR>/<NS>/xtrabackup:<PXB_VERSION>-glib<glib>-amd64     ← compile job 产出
-<ACR>/<NS>/xtrabackup:<PXB_VERSION>-glib<glib>-arm64     ← compile job 产出
-<ACR>/<NS>/xtrabackup:<PXB_VERSION>-glib<glib>           ← merge-manifest 合并的多架构 tag
-```
 
 **Release 规则**:一个 tag `v<PXB_VERSION>-glib<glib>` 挂两个 tarball,文件名自带架构后缀
 (如 `percona-xtrabackup-8.0.35-36-Linux-x86_64.glibc2.28.tar.gz`、
 `...Linux-aarch64.glibc2.28.tar.gz`,由 `pxb-build-binary.sh` 的 `uname -m` 自动产生)。
 
+### 3. `build-image.yml` —— 从 Release 拉二进制打 Docker 镜像(独立流水线)
+
+**职责单一**:不编译,二进制由 `build-binary.yml` 产出并发布到 Release;本流水线只负责
+把已发布的 tarball 打成 Docker 镜像推 ACR。可对**任意已发布的版本**单独重打镜像。
+
+入参:`PXB_VERSION`、`glib_version`、`architecture`(`all` / `amd64` / `arm64`,默认 all)。
+
+| job | 触发条件 | 职责 |
+|-----|---------|------|
+| `build-image` (matrix: amd64, arm64, 按 architecture 过滤) | 必跑 | 用 GitHub API 按 tag 查 Release assets → `wget` 对应架构 tarball 到 `output/`(公开仓库免鉴权)→ 登录 ACR → 调 `ci-build-image.sh` 推带 `-amd64`/`-arm64` 后缀的单架构 tag |
+| `merge-manifest` (`needs: build-image`, `if: architecture==all`) | 仅 all | `docker buildx imagetools create` 把 `-amd64` + `-arm64` 合并成不带后缀的多架构 tag |
+
+**镜像 tag 规则**(由 `build-image.yml` 产出):
+```
+<ACR>/<NS>/xtrabackup:<PXB_VERSION>-glib<glib>-amd64     ← build-image job 产出
+<ACR>/<NS>/xtrabackup:<PXB_VERSION>-glib<glib>-arm64     ← build-image job 产出
+<ACR>/<NS>/xtrabackup:<PXB_VERSION>-glib<glib>           ← merge-manifest 合并的多架构 tag
+```
+
+**前置依赖**(缺失会在对应步骤报错):
+1. **目标 Release 已发布**:`build-binary.yml` 用相同 `PXB_VERSION` + `glib_version` 跑过,
+   tag `v<PXB>-glib<glib>` 存在并挂有两架构 tarball。
+2. **基础镜像已推 ACR**:`build-base-image.yml` 推过 `base-glib-<glib>` 多架构 tag
+   (`ci-build-image.sh` 的 FROM 依赖它)。
+
+> **多架构合并为何用 `buildx imagetools create` 而非 `docker manifest create`**:
+> `buildx --push` 推的单架构镜像本身也是 manifest list 格式,`docker manifest create`
+> 不接受 manifest list 作为输入(报 "is a manifest list")。`imagetools create` 专门处理
+> manifest list,能正确合并多架构。base image 流水线同理。
+
 ### CI 脚本职责
 
 | 脚本 | 调用者 | 入参(env) | 作用 |
 |------|--------|----------|------|
-| `build/ci-build-binary.sh` | compile job | `PXB_VERSION` `GLIB_VERSION` `ARCH` `BASE_IMG_URL` | 由 `GLIB_VERSION` 拼 `BASE_SYSTEM_VERSION=xtrabackup:base-glib-${GLIB}`,单架构 `buildx build --output type=local` 提取 tarball 到 `output/` |
-| `build/ci-build-image.sh` | compile job | `PXB_VERSION` `GLIB_VERSION` `ARCH` `ALIYUN_*` | 用 tarball 构建单架构镜像(FROM = PXB base 镜像),推带 `-amd64`/`-arm64` 后缀的 tag。**不做多架构合并**(交给 merge-manifest job) |
+| `build/ci-build-binary.sh` | build-binary 的 compile job | `PXB_VERSION` `GLIB_VERSION` `ARCH` `BASE_IMG_URL` | 由 `GLIB_VERSION` 拼 `BASE_SYSTEM_VERSION=xtrabackup:base-glib-${GLIB}`,单架构 `buildx build --output type=local` 提取 tarball 到 `output/` |
+| `build/ci-build-image.sh` | build-image 的 build-image job | `PXB_VERSION` `GLIB_VERSION` `ARCH` `ALIYUN_*` | 从 `output/` 找 tarball(由 ci-build-binary.sh 产出**或从 Release 下载**)构建单架构镜像(FROM = PXB base 镜像),推带 `-amd64`/`-arm64` 后缀的 tag。**不做多架构合并**(交给 merge-manifest job)。脚本自身不登录 ACR,由调用方先 `docker login` |
 
 > 关键点:`ci-build-binary.sh` 用 `--output type=local` 提取产物,因为 foreign-arch(arm64)
 > 镜像不能 `--load` 进 amd64 runner 的本地 docker。amd64/arm64 走同一套逻辑。
+> `ci-build-image.sh` 与编译无耦合——只要 `output/` 有正确命名的 tarball 即可工作,
+> 故 `build-image.yml` 从 Release 下载 tarball 后能直接复用。
 
 ### CI 环境变量
 
@@ -104,6 +141,7 @@ GitHub Actions 提供两条手动触发的流水线(`workflow_dispatch`),均在 
 | `PXB_VERSION` | PXB 完整版本号,透传给 `build/Dockerfile` 的 `ARG PXB_VERSION` | CI 输入(自由文本) |
 | `GLIB_VERSION` | glibc 版本,决定 `base-glib-<X>` 基础镜像 | CI 输入(`2.28`/`2.17`) |
 | `ARCH` | 目标架构(matrix 注入) | `amd64` / `arm64` |
+| `ZONE` | 区域加速:空=官方源;`cn`=南大镜像 | build-base-image CI 输入(透传给 Dockerfile 的 `ARG ZONE`) |
 | `BASE_IMG_URL` | 基础镜像仓库 URL | `${ACR}/${NS}` |
 | `ALIYUN_REGISTRY` | ACR 地址 | repo var |
 | `ALIYUN_NAME_SPACE` | ACR 命名空间 | repo var |
@@ -166,6 +204,10 @@ cd base
 # 默认(直连 GitHub 下 patchelf)
 docker build -f Dockerfile-glib2.28 -t xtrabackup:base-glib-2.28 .
 docker build -f Dockerfile-glib2.17 -t xtrabackup:base-glib-2.17 .
+
+# 国内构建(yum/DNF 走南大镜像加速,也可在 CI 用 zone=cn)
+docker build -f Dockerfile-glib2.28 --build-arg ZONE=cn -t xtrabackup:base-glib-2.28 .
+docker build -f Dockerfile-glib2.17 --build-arg ZONE=cn -t xtrabackup:base-glib-2.17 .
 
 # 内网走代理(下载 patchelf 时)
 docker build -f Dockerfile-glib2.28 --build-arg GH_PROXY=https://gh.1102345.xyz/ \
@@ -407,6 +449,19 @@ docker rm tmp
 
 6. **`set -euo pipefail` + 管道的坑**:脚本里所有 `grep`/`awk` 管道必须加 `|| true`,
    否则 grep 无匹配返回 1 会触发 `set -e` 静默退出(排查极难)。
+
+7. **CentOS 7 / EPEL 7 已 EOL,必须用存档源**(glib2.17 基础镜像)
+   - 镜像内 `mirrorlist.centos.org` 和 `dl.fedoraproject.org/pub/epel/7/` 都已下架(404)。
+   - **vault 源**(CentOS 7 base/updates/extras/SCL):`ZONE` 决定用哪个存档——
+     - 默认(海外):`https://vault.centos.org/centos/...`(注意 `vault.centos.org` 后**必须带 `/centos`**,
+       少了这段会 404)。arm64 用 `https://vault.centos.org/altarch/...`(altarch 根无需 `/centos`)。
+     - `cn`(南大):`https://mirror.nju.edu.cn/centos-vault/centos/...`
+       (arm64 用 `.../centos-vault/altarch/...`)。
+   - **EPEL 源**:同样 EOL,默认主站 `dl.fedoraproject.org/pub/epel/7/` 已 404。改用:
+     - 默认(海外):`https://archives.fedoraproject.org/pub/archive/epel/7/...`
+     - `cn`(南大):`https://mirror.nju.edu.cn/epel/7/...`
+   - Dockerfile 里用 `ZONE` ARG 统一控制这两个源,改路径时**默认分支和 cn 分支都要核对**
+     (曾因只测了 cn 路径、默认分支漏了 `/centos` 段导致 CI 404)。
 
 ## 版本/路径速查
 
