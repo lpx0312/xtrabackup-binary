@@ -73,7 +73,7 @@ RUN set -e && \
     if [ "${ZONE}" = "cn" ]; then \
         EPEL_BASE="https://mirror.nju.edu.cn/epel"; \
     else \
-        EPEL_BASE="https://dl.fedoraproject.org/pub/epel"; \
+        EPEL_BASE="https://archives.fedoraproject.org/pub/archive/epel"; \
     fi && \
     sed -i \
         -e 's|^mirrorlist=|#mirrorlist=|g' \
