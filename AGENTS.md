@@ -14,8 +14,8 @@ xtrabackup-binary/
 ├── build/                        # 网络构建(构建时 curl 下载源码,适合 CI/有外网)
 │   ├── Dockerfile                #   ARG: BASE_IMG_URL + BASE_SYSTEM_VERSION + PXB_VERSION
 │   ├── pxb-build-binary.sh       #   编译+打包脚本(与 build-offline/ 保持一致)
-│   ├── ci-build-binary.sh        #   CI: 拉基础镜像 → 编译 → 提取产物
-│   └── ci-build-image.sh         #   CI: 用产物构建多架构发布镜像并推 ACR
+│   ├── ci-build-binary.sh        #   CI: 拉基础镜像 → 编译 → --load + docker cp 提取 tarball
+│   └── ci-build-image.sh         #   CI: 用 tarball 构建单架构发布镜像并推 ACR(合并由 workflow 做)
 ├── build-offline/                # 离线构建(本地 COPY 源码,适合无网/内网/本地调试)
 │   ├── Dockerfile                #   ARG: BASE_IMAGE + PXB_TARBALL + BOOST_TARBALL
 │   ├── pxb-build-binary.sh       #   编译+打包脚本(与 build/ 保持一致)
@@ -54,21 +54,28 @@ xtrabackup-binary/
 
 ## CI/CD 流水线
 
-GitHub Actions 提供三条手动触发的流水线(`workflow_dispatch`),均在 `ubuntu-latest` 上跑,
-经 `.github/actions/setup` 做磁盘清理 + QEMU + buildx。**职责拆分**:基础镜像构建、二进制编译、
-镜像打包各成独立流水线,互不耦合。**多架构**通过两种方式实现:基础镜像直接
-`buildx --platform amd64,arm64`;应用流水线用 `strategy.matrix` 按架构并行(amd64/arm64
-各自独立 job,arm64 走 QEMU,不互相阻塞)。
+GitHub Actions 提供三条手动触发的流水线(`workflow_dispatch`),**职责拆分**:基础镜像构建、
+二进制编译、镜像打包各成独立流水线,互不耦合。每条流水线都经 `.github/actions/setup` 做磁盘清理
+(`easimon/maximize-build-space`)+ QEMU + buildx。**多架构用原生 runner 并行**(不走 QEMU 模拟):
+amd64 job 用 `ubuntu-latest`,arm64 job 用 `ubuntu-24.04-arm`(免费的原生 arm64 runner)。
+
+> ⚠️ 不用 `strategy.matrix` + `runs-on: ${{ matrix.runner }}`。实测该写法在 GitHub 启动阶段
+> 无法可靠解析动态 runner label,会触发 `startup_failure`。故每个架构拆成**独立 job**,
+> `runs-on` 用静态字符串(commit `0683d07` 踩坑记录)。
 
 ```
 build-base-image.yml          build-binary.yml              build-image.yml
   base 镜像(编译环境)          二进制 tarball                  发布镜像(Docker)
   ──────────────────          ──────────────────            ──────────────────
-  build-amd64 ─┐              compile(amd64) ─┐             build-image(amd64) ─┐
-  build-arm64 ─┼→ merge       compile(arm64) ─┼→ release    build-image(arm64) ─┼→ merge-manifest
-                              (只编译+发版,    (挂两架构       (从 Release 拉       (合并多架构 tag)
-                               不碰镜像)        tarball)        tarball 再打镜像)
+  build-amd64  (u-latest)  ─┐ compile-amd64  (u-latest)  ─┐ build-image-amd64 (u-latest)  ─┐
+  build-arm64  (u-24.04-arm)┘ compile-arm64  (u-24.04-arm)┘ build-image-arm64 (u-24.04-arm)┘
+        │                            │                            │
+        ↓                            ↓                            ↓
+   merge-manifest                release                  merge-manifest
+   (合并多架构 tag)           (发版,挂两架构 tarball)        (合并多架构 tag)
 ```
+
+> 架构说明:`u-latest` = `ubuntu-latest`(原生 amd64),`u-24.04-arm` = `ubuntu-24.04-arm`(原生 arm64)。
 
 ### 1. `build-base-image.yml` —— 构建并推送基础镜像
 
@@ -81,12 +88,13 @@ build-base-image.yml          build-binary.yml              build-image.yml
 ### 2. `build-binary.yml` —— 编译 + 发版(只做二进制,不碰镜像)
 
 入参:`PXB_VERSION`(完整版本号,描述提示 8.0.35-36/2.4.29)、`glib_version`。
-两个 job,**纯编译 + 发 Release**,镜像构建已拆到 `build-image.yml`:
+三个 job,**纯编译 + 发 Release**,镜像构建已拆到 `build-image.yml`:
 
-| job | 触发条件 | 职责 |
-|-----|---------|------|
-| `compile` (matrix: amd64, arm64, fail-fast:false) | 必跑 | 调 `ci-build-binary.sh` 单架构编译 → `--output type=local` 提取 tarball 到 `output/` → `upload-artifact`。**不登录 ACR**(只需匿名拉公开基础镜像) |
-| `release` (`needs: compile`) | 必跑 | `download-artifact` 合并两架构 → `softprops/action-gh-release@v2` 发到同一 tag `v<PXB>-glib<glib>` |
+| job | runner | 职责 |
+|-----|--------|------|
+| `compile-amd64` | `ubuntu-latest`(原生 amd64) | 调 `ci-build-binary.sh` 编译 → `--load` 载入本地 docker → `docker create`+`docker cp` 提取 tarball 到 `output/` → `upload-artifact`。**不登录 ACR**(只需匿名拉公开基础镜像) |
+| `compile-arm64` | `ubuntu-24.04-arm`(原生 arm64) | 同上,arm64 |
+| `release` (`needs: [compile-amd64, compile-arm64]`) | `ubuntu-latest` | `download-artifact` 合并两架构 → `softprops/action-gh-release@v2` 发到同一 tag `v<PXB>-glib<glib>` |
 
 **Release 规则**:一个 tag `v<PXB_VERSION>-glib<glib>` 挂两个 tarball,文件名自带架构后缀
 (如 `percona-xtrabackup-8.0.35-36-Linux-x86_64.glibc2.28.tar.gz`、
@@ -99,10 +107,11 @@ build-base-image.yml          build-binary.yml              build-image.yml
 
 入参:`PXB_VERSION`、`glib_version`、`architecture`(`all` / `amd64` / `arm64`,默认 all)。
 
-| job | 触发条件 | 职责 |
-|-----|---------|------|
-| `build-image` (matrix: amd64, arm64, 按 architecture 过滤) | 必跑 | 用 GitHub API 按 tag 查 Release assets → `wget` 对应架构 tarball 到 `output/`(公开仓库免鉴权)→ 登录 ACR → 调 `ci-build-image.sh` 推带 `-amd64`/`-arm64` 后缀的单架构 tag |
-| `merge-manifest` (`needs: build-image`, `if: architecture==all`) | 仅 all | `docker buildx imagetools create` 把 `-amd64` + `-arm64` 合并成不带后缀的多架构 tag |
+| job | runner | 触发条件 | 职责 |
+|-----|--------|---------|------|
+| `build-image-amd64` | `ubuntu-latest`(原生 amd64) | `architecture` ∈ {all, amd64} | 用 GitHub API 按 tag 查 Release assets → `wget` 对应架构 tarball 到 `output/`(公开仓库免鉴权)→ 登录 ACR → 调 `ci-build-image.sh` 推带 `-amd64` 后缀的单架构 tag |
+| `build-image-arm64` | `ubuntu-24.04-arm`(原生 arm64) | `architecture` ∈ {all, arm64} | 同上,arm64 |
+| `merge-manifest` (`needs: [build-image-amd64, build-image-arm64]`, `if: architecture==all`) | `ubuntu-latest` | 仅 all | `docker buildx imagetools create` 把 `-amd64` + `-arm64` 合并成不带后缀的多架构 tag |
 
 **镜像 tag 规则**(由 `build-image.yml` 产出):
 ```
@@ -126,11 +135,15 @@ build-base-image.yml          build-binary.yml              build-image.yml
 
 | 脚本 | 调用者 | 入参(env) | 作用 |
 |------|--------|----------|------|
-| `build/ci-build-binary.sh` | build-binary 的 compile job | `PXB_VERSION` `GLIB_VERSION` `ARCH` `BASE_IMG_URL` | 由 `GLIB_VERSION` 拼 `BASE_SYSTEM_VERSION=xtrabackup:base-glib-${GLIB}`,单架构 `buildx build --output type=local` 提取 tarball 到 `output/` |
-| `build/ci-build-image.sh` | build-image 的 build-image job | `PXB_VERSION` `GLIB_VERSION` `ARCH` `ALIYUN_*` | 从 `output/` 找 tarball(由 ci-build-binary.sh 产出**或从 Release 下载**)构建单架构镜像(FROM = PXB base 镜像),推带 `-amd64`/`-arm64` 后缀的 tag。**不做多架构合并**(交给 merge-manifest job)。脚本自身不登录 ACR,由调用方先 `docker login` |
+| `build/ci-build-binary.sh` | build-binary 的 compile-amd64/compile-arm64 job | `PXB_VERSION` `GLIB_VERSION` `ARCH` `BASE_IMG_URL` | 由 `GLIB_VERSION` 拼 `BASE_SYSTEM_VERSION=xtrabackup:base-glib-${GLIB}`,单架构 `buildx build --load` 载入本地 docker → `docker create`+`docker cp` 提取 tarball 到 `output/` |
+| `build/ci-build-image.sh` | build-image 的 build-image-amd64/arm64 job | `PXB_VERSION` `GLIB_VERSION` `ARCH` `ALIYUN_*` | 从 `output/` 找 tarball(由 ci-build-binary.sh 产出**或从 Release 下载**)构建单架构镜像(FROM = PXB base 镜像),推带 `-amd64`/`-arm64` 后缀的 tag。**不做多架构合并**(交给 merge-manifest job)。脚本自身不登录 ACR,由调用方先 `docker login` |
 
-> 关键点:`ci-build-binary.sh` 用 `--output type=local` 提取产物,因为 foreign-arch(arm64)
-> 镜像不能 `--load` 进 amd64 runner 的本地 docker。amd64/arm64 走同一套逻辑。
+> 关键点:`ci-build-binary.sh` 用 `--load` 载入镜像再 `docker create`+`docker cp` 提取产物,
+> 而**不是** `--output type=local`。原因:buildx 用 `docker-container` 驱动(buildkitd 跑在
+> 独立容器里),经 `easimon/maximize-build-space` 重挂载 `/var/lib/docker` 后,local exporter
+> 往 host 写同步标记文件会 `permission denied`(报 "failed to create enable: openat enable")。
+> `--load` 走 docker 标准存储再 `docker cp`,彻底绕开该坑。前提:runner 与目标镜像同架构
+> ——已由原生 runner 保证(amd64 job 在 amd64 runner,arm64 job 在 arm64 runner)。
 > `ci-build-image.sh` 与编译无耦合——只要 `output/` 有正确命名的 tarball 即可工作,
 > 故 `build-image.yml` 从 Release 下载 tarball 后能直接复用。
 
@@ -140,7 +153,7 @@ build-base-image.yml          build-binary.yml              build-image.yml
 |------|------|------|
 | `PXB_VERSION` | PXB 完整版本号,透传给 `build/Dockerfile` 的 `ARG PXB_VERSION` | CI 输入(自由文本) |
 | `GLIB_VERSION` | glibc 版本,决定 `base-glib-<X>` 基础镜像 | CI 输入(`2.28`/`2.17`) |
-| `ARCH` | 目标架构(matrix 注入) | `amd64` / `arm64` |
+| `ARCH` | 目标架构(各 job 静态写入:compile-amd64 传 `amd64`,compile-arm64 传 `arm64`) | `amd64` / `arm64` |
 | `ZONE` | 区域加速:空=官方源;`cn`=南大镜像 | build-base-image CI 输入(透传给 Dockerfile 的 `ARG ZONE`) |
 | `BASE_IMG_URL` | 基础镜像仓库 URL | `${ACR}/${NS}` |
 | `ALIYUN_REGISTRY` | ACR 地址 | repo var |
@@ -162,8 +175,9 @@ GitHub 仓库 **Settings → Variables / Secrets**(已在 `lpx0312/xtrabackup-bi
 
 - **glib2.17 + arm64 会失败**:`base/Dockerfile-glib2.17` 的 `FROM centos:7.9.2009` 在 Docker Hub
   只有 amd64(CentOS 7 无官方 arm64)。glib2.28(ACR Rocky)是多架构,正常。
-  → 选 `glib_version=2.17` 时只跑 amd64(矩阵里把 arm64 去掉,或单独触发)。
-- arm64 在 amd64 runner 上走 QEMU 编译,约 1.5~2 小时,但与 amd64 并行,不互相阻塞。
+  → 选 `glib_version=2.17` 时只能构建 amd64(base image workflow 选 `architecture=amd64`;
+  build-binary/build-image 目前没有架构开关,需选 glib2.28 才能跑 arm64,或单独改造加 architecture 输入)。
+- arm64 走**原生 runner** `ubuntu-24.04-arm`(不走 QEMU),编译约 20 分钟,与 amd64 并行,不互相阻塞。
 
 ## 为什么需要"临时容器手动验证"
 
