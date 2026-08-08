@@ -45,7 +45,7 @@ RUN set -e && \
         if [ "${ZONE}" = "cn" ]; then \
             VAULT="https://mirror.nju.edu.cn/centos-vault/centos"; \
         else \
-            VAULT="https://vault.centos.org"; \
+            VAULT="https://vault.centos.org/centos"; \
         fi; \
     fi && \
     printf '[base]\nname=CentOS-7 - Base\nbaseurl=%s/$releasever/os/$basearch/\ngpgcheck=0\n\n[updates]\nname=CentOS-7 - Updates\nbaseurl=%s/$releasever/updates/$basearch/\ngpgcheck=0\n\n[extras]\nname=CentOS-7 - Extras\nbaseurl=%s/$releasever/extras/$basearch/\ngpgcheck=0\n' \
@@ -67,7 +67,7 @@ RUN set -e && \
         if [ "${ZONE}" = "cn" ]; then \
             VAULT="https://mirror.nju.edu.cn/centos-vault/centos"; \
         else \
-            VAULT="https://vault.centos.org"; \
+            VAULT="https://vault.centos.org/centos"; \
         fi; \
     fi && \
     if [ "${ZONE}" = "cn" ]; then \
