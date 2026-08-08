@@ -1,6 +1,6 @@
 name: Build Binary & Release
 
-# CI 流水线:手动触发,按架构矩阵并行编译 PXB 二进制 → 发 Release。
+# CI 流水线:手动触发,amd64/arm64 在各自原生 runner 上并行编译 PXB 二进制 → 发 Release。
 # 职责单一:只编译 + 发版,不做 Docker 镜像。
 # 镜像构建见 build-image.yml(从本工作流发布的 Release 拉取 tarball 后打镜像)。
 #
@@ -8,8 +8,13 @@ name: Build Binary & Release
 #   PXB_VERSION   - PXB 完整版本号(如 8.0.35-36、2.4.29),原样透传给 build/Dockerfile 的 ARG PXB_VERSION
 #   glib_version  - glibc 版本(2.28/2.17),决定用哪个基础镜像
 #
-# 流程:
-#   compile (matrix: amd64, arm64)  →  release (必跑:发 Release,挂两架构 tarball)
+# 结构(arm64 用原生 runner,不走 QEMU,与 build-base-image.yml 一致):
+#   compile-amd64 - ubuntu-latest(原生 amd64)
+#   compile-arm64 - ubuntu-24.04-arm(原生 arm64,免费)
+#   release       - needs 上面两个,合并两架构 tarball 发到同一 Release tag
+#
+# 注意:不使用 matrix + runs-on: ${{ matrix.runner }}。实测该写法触发 startup_failure
+# (GitHub 启动阶段无法可靠解析动态 runner label)。故拆成两个独立 job,runs-on 用静态字符串。
 
 permissions:
   contents: write
@@ -33,15 +38,11 @@ on:
 
 jobs:
   # ============================================================
-  # Job 1: 按架构矩阵并行编译(纯编译,不碰镜像)
+  # Job 1: amd64 编译(原生 amd64 runner)
   # ============================================================
-  compile:
+  compile-amd64:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
+    timeout-minutes: 120
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -51,28 +52,57 @@ jobs:
 
       # 编译二进制(单架构),产物输出到 output/
       # 只需匿名拉公开基础镜像,不登录 ACR
-      - name: Build Binary (${{ matrix.arch }})
+      - name: Build Binary (amd64)
         run: bash build/ci-build-binary.sh
         env:
           PXB_VERSION: ${{ github.event.inputs.PXB_VERSION }}
           GLIB_VERSION: ${{ github.event.inputs.glib_version }}
-          ARCH: ${{ matrix.arch }}
+          ARCH: amd64
           BASE_IMG_URL: ${{ vars.ALIYUN_REGISTRY }}/${{ vars.ALIYUN_NAME_SPACE }}
 
       # 上传 tarball 供 release job 下载(artifact 名带架构,避免冲突)
-      - name: Upload Binary Artifact (${{ matrix.arch }})
+      - name: Upload Binary Artifact (amd64)
         uses: actions/upload-artifact@v4
         with:
-          name: pxb-binary-${{ github.event.inputs.PXB_VERSION }}-glib${{ github.event.inputs.glib_version }}-${{ matrix.arch }}
+          name: pxb-binary-${{ github.event.inputs.PXB_VERSION }}-glib${{ github.event.inputs.glib_version }}-amd64
           path: output/*.tar.gz
           retention-days: 3
           if-no-files-found: error
 
   # ============================================================
-  # Job 2: 发 Release(两架构 tarball 挂同一个 Release tag)
+  # Job 2: arm64 编译(原生 arm64 runner,免费,不走 QEMU)
+  # ============================================================
+  compile-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup
+
+      - name: Build Binary (arm64)
+        run: bash build/ci-build-binary.sh
+        env:
+          PXB_VERSION: ${{ github.event.inputs.PXB_VERSION }}
+          GLIB_VERSION: ${{ github.event.inputs.glib_version }}
+          ARCH: arm64
+          BASE_IMG_URL: ${{ vars.ALIYUN_REGISTRY }}/${{ vars.ALIYUN_NAME_SPACE }}
+
+      - name: Upload Binary Artifact (arm64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pxb-binary-${{ github.event.inputs.PXB_VERSION }}-glib${{ github.event.inputs.glib_version }}-arm64
+          path: output/*.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+
+  # ============================================================
+  # Job 3: 发 Release(两架构 tarball 挂同一个 Release tag)
   # ============================================================
   release:
-    needs: compile
+    needs: [compile-amd64, compile-arm64]
     runs-on: ubuntu-latest
     steps:
       - name: Download All Artifacts

@@ -14,14 +14,17 @@ name: Build Image
 #   2. 基础镜像已推 ACR —— build-base-image.yml 推过 base-glib-<glib> 多架构 tag
 #      (ci-build-image.sh 的 FROM 依赖它)
 #
-# 流程:
-#   build-image (matrix: amd64, arm64)  →  merge-manifest (仅 architecture=all)
-#     → 从 Release wget tarball 到 output/
-#     → 复用 build/ci-build-image.sh 打镜像 + 推单架构 tag
+# 结构(arm64 用原生 runner,不走 QEMU,与 build-base-image.yml 一致):
+#   build-image-amd64 - ubuntu-latest(原生 amd64),仅 architecture=all|amd64 跑
+#   build-image-arm64 - ubuntu-24.04-arm(原生 arm64,免费),仅 architecture=all|arm64 跑
+#   merge-manifest    - 仅 architecture=all,合并两个单架构 tag 为多架构 tag
+#
+# 注意:不使用 matrix + runs-on: ${{ matrix.runner }}。实测该写法触发 startup_failure
+# (GitHub 启动阶段无法可靠解析动态 runner label)。故拆成两个独立 job,runs-on 用静态字符串。
 #
 # 镜像 tag 规则(与 build-binary 旧逻辑保持一致):
-#   <ACR>/<NS>/xtrabackup:<PXB>-glib<glib>-amd64    ← build-image job 产出
-#   <ACR>/<NS>/xtrabackup:<PXB>-glib<glib>-arm64    ← build-image job 产出
+#   <ACR>/<NS>/xtrabackup:<PXB>-glib<glib>-amd64    ← build-image-amd64 产出
+#   <ACR>/<NS>/xtrabackup:<PXB>-glib<glib>-arm64    ← build-image-arm64 产出
 #   <ACR>/<NS>/xtrabackup:<PXB>-glib<glib>           ← merge-manifest 合并(不带架构后缀 = 多架构)
 
 permissions:
@@ -55,17 +58,12 @@ on:
 
 jobs:
   # ============================================================
-  # Job 1: 按架构矩阵并行,从 Release 下载 tarball → 打镜像 → 推单架构 tag
+  # Job 1: amd64 —— 从 Release 下载 tarball → 打镜像 → 推单架构 tag(原生 amd64 runner)
   # ============================================================
-  build-image:
+  build-image-amd64:
+    if: ${{ github.event.inputs.architecture == 'all' || github.event.inputs.architecture == 'amd64' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
-    # architecture=all 跑两个;选单架构时只跑匹配的那个
-    if: ${{ github.event.inputs.architecture == 'all' || github.event.inputs.architecture == matrix.arch }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -73,22 +71,13 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup
 
-      # 从 GitHub Release 下载对应架构的 tarball(公开仓库,免鉴权)
+      # 从 GitHub Release 下载 amd64 tarball(公开仓库,免鉴权)
       # wget 不支持 glob,故先用 Release API 拿精确 asset 名,再 wget
       - name: Download Tarball from Release
-        env:
-          ARCH: ${{ matrix.arch }}
         run: |
-          PXB_VERSION="${{ github.event.inputs.PXB_VERSION }}"
-          GLIB_VERSION="${{ github.event.inputs.glib_version }}"
-          TAG="v${PXB_VERSION}-glib${GLIB_VERSION}"
-          REPO="${{ github.repository }}"
-
-          # 架构 -> 文件名子串(tarball 由 pxb-build-binary.sh 用 uname -m 命名)
-          case "${ARCH}" in
-            amd64) ARCH_SUBSTR="Linux-x86_64" ;;
-            arm64) ARCH_SUBSTR="Linux-aarch64" ;;
-          esac
+          TAG="v${{ github.event.inputs.PXB_VERSION }}-glib${{ github.event.inputs.glib_version }}"
+          ARCH_SUBSTR="Linux-x86_64"
+          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG}"
 
           echo "============================================"
           echo "  从 Release 下载二进制"
@@ -97,8 +86,6 @@ jobs:
           echo "  架构子串:    ${ARCH_SUBSTR}"
           echo "============================================"
 
-          # 查 Release assets(公开仓库免 token)。jq 按架构子串过滤出下载 URL
-          API_URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
           echo ">>> 查询 Release assets..."
           ASSET_URL=$(curl -fsSL "${API_URL}" | jq -r ".assets[].browser_download_url" | grep "${ARCH_SUBSTR}" | head -1 || true)
 
@@ -124,12 +111,12 @@ jobs:
           ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
 
       # 复用 ci-build-image.sh:从 output/ 找 tarball → 生成临时 Dockerfile → buildx --push
-      - name: Build and Push Image (${{ matrix.arch }})
+      - name: Build and Push Image (amd64)
         run: bash build/ci-build-image.sh
         env:
           PXB_VERSION: ${{ github.event.inputs.PXB_VERSION }}
           GLIB_VERSION: ${{ github.event.inputs.glib_version }}
-          ARCH: ${{ matrix.arch }}
+          ARCH: amd64
           ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
           ALIYUN_NAME_SPACE: ${{ vars.ALIYUN_NAME_SPACE }}
 
@@ -140,10 +127,76 @@ jobs:
           docker builder prune -af || true
 
   # ============================================================
-  # Job 2: 合并单架构 tag 为多架构 manifest(仅 architecture=all)
+  # Job 2: arm64 —— 从 Release 下载 tarball → 打镜像 → 推单架构 tag(原生 arm64 runner)
+  # ============================================================
+  build-image-arm64:
+    if: ${{ github.event.inputs.architecture == 'all' || github.event.inputs.architecture == 'arm64' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup
+
+      - name: Download Tarball from Release
+        run: |
+          TAG="v${{ github.event.inputs.PXB_VERSION }}-glib${{ github.event.inputs.glib_version }}"
+          ARCH_SUBSTR="Linux-aarch64"
+          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG}"
+
+          echo "============================================"
+          echo "  从 Release 下载二进制"
+          echo "============================================"
+          echo "  Release tag: ${TAG}"
+          echo "  架构子串:    ${ARCH_SUBSTR}"
+          echo "============================================"
+
+          echo ">>> 查询 Release assets..."
+          ASSET_URL=$(curl -fsSL "${API_URL}" | jq -r ".assets[].browser_download_url" | grep "${ARCH_SUBSTR}" | head -1 || true)
+
+          if [ -z "${ASSET_URL}" ]; then
+            echo "❌ 未在 Release ${TAG} 找到含 '${ARCH_SUBSTR}' 的 tarball"
+            echo "    可能原因:build-binary.yml 还没用此版本号跑过,或版本号/glibc 填错。"
+            echo "    该 Release 现有 assets:"
+            curl -fsSL "${API_URL}" | jq -r '.assets[].name' 2>/dev/null || echo "    (无法读取 Release)"
+            exit 1
+          fi
+
+          echo ">>> 下载: ${ASSET_URL}"
+          mkdir -p output
+          wget -q -O "output/$(basename "${ASSET_URL}")" "${ASSET_URL}"
+          ls -lh output/
+
+      - name: Login ACR
+        run: |
+          docker login -u "${ALIYUN_REGISTRY_USER}" -p "${ALIYUN_REGISTRY_PASSWORD}" "${ALIYUN_REGISTRY}"
+        env:
+          ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
+          ALIYUN_REGISTRY_USER: ${{ vars.ALIYUN_REGISTRY_USER }}
+          ALIYUN_REGISTRY_PASSWORD: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Build and Push Image (arm64)
+        run: bash build/ci-build-image.sh
+        env:
+          PXB_VERSION: ${{ github.event.inputs.PXB_VERSION }}
+          GLIB_VERSION: ${{ github.event.inputs.glib_version }}
+          ARCH: arm64
+          ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
+          ALIYUN_NAME_SPACE: ${{ vars.ALIYUN_NAME_SPACE }}
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker image prune -af || true
+          docker builder prune -af || true
+
+  # ============================================================
+  # Job 3: 合并单架构 tag 为多架构 manifest(仅 architecture=all)
   # ============================================================
   merge-manifest:
-    needs: [build-image]
+    needs: [build-image-amd64, build-image-arm64]
     if: ${{ github.event.inputs.architecture == 'all' }}
     runs-on: ubuntu-latest
     steps:
