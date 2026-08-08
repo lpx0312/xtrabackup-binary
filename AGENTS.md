@@ -94,11 +94,13 @@ build-base-image.yml          build-binary.yml              build-image.yml
 |-----|--------|------|
 | `compile-amd64` | `ubuntu-latest`(原生 amd64) | 调 `ci-build-binary.sh` 编译 → `--load` 载入本地 docker → `docker create`+`docker cp` 提取 tarball 到 `output/` → `upload-artifact`。**不登录 ACR**(只需匿名拉公开基础镜像) |
 | `compile-arm64` | `ubuntu-24.04-arm`(原生 arm64) | 同上,arm64 |
-| `release` (`needs: [compile-amd64, compile-arm64]`) | `ubuntu-latest` | `download-artifact` 合并两架构 → `softprops/action-gh-release@v2` 发到同一 tag `v<PXB>-glib<glib>` |
+| `release` (`needs: [compile-amd64, compile-arm64]`) | `ubuntu-latest` | `download-artifact` 合并两架构 → `softprops/action-gh-release@v2` 发到同一 tag `v<PXB>`(**不含 glib 后缀**)。同一 PXB 版本多次触发(不同 glib)会往同一 Release 累加 assets |
 
-**Release 规则**:一个 tag `v<PXB_VERSION>-glib<glib>` 挂两个 tarball,文件名自带架构后缀
-(如 `percona-xtrabackup-8.0.35-36-Linux-x86_64.glibc2.28.tar.gz`、
-`...Linux-aarch64.glibc2.28.tar.gz`,由 `pxb-build-binary.sh` 的 `uname -m` 自动产生)。
+**Release 规则**:**版本以 PXB 为准**,tag 为 `v<PXB_VERSION>`(不含 glib 后缀)。
+同一 PXB 版本选不同 `glib_version` 多次触发,产物**累积到同一个 Release**(tarball 文件名
+含 `.glibc<ver>` + 架构后缀,不会冲突)。要凑齐全 4 组合(2 glib × 2 架构)需触发两次。
+文件名由 `pxb-build-binary.sh` 的 `uname -m` + `ldd --version` 自动产生,如
+`percona-xtrabackup-8.0.35-36-Linux-x86_64.glibc2.28.tar.gz`。
 
 ### 3. `build-image.yml` —— 从 Release 拉二进制打 Docker 镜像(独立流水线)
 
@@ -121,8 +123,8 @@ build-base-image.yml          build-binary.yml              build-image.yml
 ```
 
 **前置依赖**(缺失会在对应步骤报错):
-1. **目标 Release 已发布**:`build-binary.yml` 用相同 `PXB_VERSION` + `glib_version` 跑过,
-   tag `v<PXB>-glib<glib>` 存在并挂有两架构 tarball。
+1. **目标 Release 已发布对应 glib 的 tarball**:`build-binary.yml` 用相同 `PXB_VERSION` +
+   `glib_version` 跑过,Release tag `v<PXB>` 下存在匹配 `<arch>.glibc<glib>` 的 tarball。
 2. **基础镜像已推 ACR**:`build-base-image.yml` 推过 `base-glib-<glib>` 多架构 tag
    (`ci-build-image.sh` 的 FROM 依赖它)。
 
@@ -173,10 +175,11 @@ GitHub 仓库 **Settings → Variables / Secrets**(已在 `lpx0312/xtrabackup-bi
 
 ### 已知限制
 
-- **glib2.17 + arm64 会失败**:`base/Dockerfile-glib2.17` 的 `FROM centos:7.9.2009` 在 Docker Hub
-  只有 amd64(CentOS 7 无官方 arm64)。glib2.28(ACR Rocky)是多架构,正常。
-  → 选 `glib_version=2.17` 时只能构建 amd64(base image workflow 选 `architecture=amd64`;
-  build-binary/build-image 目前没有架构开关,需选 glib2.28 才能跑 arm64,或单独改造加 architecture 输入)。
+- **PXB 2.4 + aarch64 + glibc2.17 需要 prctl 补丁**:PXB 2.4(基于 MySQL 5.7)在该组合下
+  编译报 `prctl was not declared`,`pxb-build-binary.sh` 已内置条件 patch(仅此组合触发,
+  给 `sql/mysqld.cc` 补 `#include <sys/prctl.h>`)。其它组合(8.0 / amd64 / glibc2.28)无此问题。
+- glib2.17 的 `base/Dockerfile-glib2.17` 基于 `centos:7.9.2009`,Docker Hub 只有 amd64,
+  但 Dockerfile 已用 vault `altarch` 源适配 arm64,**实测四组合(2 PXB × 2 glib)amd64+arm64 全部通过**。
 - arm64 走**原生 runner** `ubuntu-24.04-arm`(不走 QEMU),编译约 20 分钟,与 amd64 并行,不互相阻塞。
 
 ## 为什么需要"临时容器手动验证"

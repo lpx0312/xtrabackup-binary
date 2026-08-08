@@ -100,6 +100,11 @@ jobs:
 
   # ============================================================
   # Job 3: 发 Release(两架构 tarball 挂同一个 Release tag)
+  # ------------------------------------------------------------
+  # Release tag 以 PXB 版本为准(v<PXB>),不含 glib 后缀。
+  # 同一 PXB 版本的不同 glib 变体(glib2.17/2.28)会往同一个 Release 追加
+  # assets(tarball 文件名含 .glibc<ver> 后缀,不会冲突)。
+  # 故同一 PXB 版本可多次触发(每次选不同 glib_version),产物累积到同一 Release。
   # ============================================================
   release:
     needs: [compile-amd64, compile-arm64]
@@ -114,31 +119,46 @@ jobs:
 
       - name: List Release Assets
         run: |
-          echo "=== Release 产物列表 ==="
+          echo "=== 本次 Release 产物列表 ==="
           ls -lh release-assets/
 
-      - name: Create Release and Upload Binaries
+      - name: Create/Update Release and Upload Binaries
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ github.event.inputs.PXB_VERSION }}-glib${{ github.event.inputs.glib_version }}
-          name: XtraBackup ${{ github.event.inputs.PXB_VERSION }} (glibc ${{ github.event.inputs.glib_version }})
+          tag_name: v${{ github.event.inputs.PXB_VERSION }}
+          name: XtraBackup ${{ github.event.inputs.PXB_VERSION }}
           body: |
             ## Percona XtraBackup ${{ github.event.inputs.PXB_VERSION }}
 
-            - **glibc 版本**: ${{ github.event.inputs.glib_version }}
-            - **构建架构**: linux/amd64, linux/arm64
+            便携式二进制包,自带 lib/private 运行时依赖(ssl/crypto/libaio/procps 等),
+            跨发行版可移植。一个 Release 下汇总该 PXB 版本的全部变体:
 
-            ### 产物
-            便携式二进制包,自带 lib/private 运行时依赖(ssl/crypto/libaio 等),跨发行版可移植。
-            文件名含架构与 glibc 版本后缀,按目标机选择对应包。
+            - **glibc 版本**: `glibc2.17`(CentOS 7 基线,兼容老系统)/ `glibc2.28`(Rocky 8 基线)
+            - **架构**: `linux/amd64`(x86_64)/ `linux/arm64`(aarch64)
 
-            ### 使用方式
+            ### 如何选择包
+            按目标机的 **CPU 架构** + **glibc 版本** 选对应 tarball。查 glibc 版本:`ldd --version`。
+            - 向后兼容:glibc 2.17 的包能在 ≥ 2.17 的系统跑;不确定就选低版本(2.17)。
+            - 文件名格式:`percona-xtrabackup-<PXB>-Linux-<arch>.glibc<ver>.tar.gz`
+
+            ### 安装(以 glibc2.28 + x86_64 为例)
             ```bash
-            tar -xzf percona-xtrabackup-*.glibc*.tar.gz -C /usr/local/
-            export PATH="/usr/local/percona-xtrabackup-*/bin:$PATH"
+            # 1. 解压并固定目录名
+            tar -xzf percona-xtrabackup-${{ github.event.inputs.PXB_VERSION }}-Linux-x86_64.glibc2.28.tar.gz -C /usr/local/
+            mv /usr/local/percona-xtrabackup-* /usr/local/xtrabackup
+
+            # 2. 加入 PATH(永久生效)
+            echo 'export PATH=/usr/local/xtrabackup/bin:$PATH' >> /etc/profile
+            source /etc/profile
+
+            # 3. 检查动态链接库(应无 not found)
+            ldd /usr/local/xtrabackup/bin/xtrabackup | grep "not found"
+
+            # 4. 测试
             xtrabackup --version
             ```
           files: release-assets/*.tar.gz
           generate_release_notes: false
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

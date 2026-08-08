@@ -75,23 +75,25 @@ jobs:
       # wget 不支持 glob,故先用 Release API 拿精确 asset 名,再 wget
       - name: Download Tarball from Release
         run: |
-          TAG="v${{ github.event.inputs.PXB_VERSION }}-glib${{ github.event.inputs.glib_version }}"
-          ARCH_SUBSTR="Linux-x86_64"
+          TAG="v${{ github.event.inputs.PXB_VERSION }}"
+          GLIB="${{ github.event.inputs.glib_version }}"
+          # 同时按 架构 + glib 版本 过滤(一个 Release 下有多个 glib 变体)
+          MATCH="Linux-x86_64.glibc${GLIB}"
           API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG}"
 
           echo "============================================"
           echo "  从 Release 下载二进制"
           echo "============================================"
           echo "  Release tag: ${TAG}"
-          echo "  架构子串:    ${ARCH_SUBSTR}"
+          echo "  匹配子串:    ${MATCH}"
           echo "============================================"
 
           echo ">>> 查询 Release assets..."
-          ASSET_URL=$(curl -fsSL "${API_URL}" | jq -r ".assets[].browser_download_url" | grep "${ARCH_SUBSTR}" | head -1 || true)
+          ASSET_URL=$(curl -fsSL "${API_URL}" | jq -r ".assets[].browser_download_url" | grep "${MATCH}" | head -1 || true)
 
           if [ -z "${ASSET_URL}" ]; then
-            echo "❌ 未在 Release ${TAG} 找到含 '${ARCH_SUBSTR}' 的 tarball"
-            echo "    可能原因:build-binary.yml 还没用此版本号跑过,或版本号/glibc 填错。"
+            echo "❌ 未在 Release ${TAG} 找到匹配 '${MATCH}' 的 tarball"
+            echo "    可能原因:build-binary.yml 还没用此 glib_version 跑过,或版本号/glibc 填错。"
             echo "    该 Release 现有 assets:"
             curl -fsSL "${API_URL}" | jq -r '.assets[].name' 2>/dev/null || echo "    (无法读取 Release)"
             exit 1
@@ -142,23 +144,24 @@ jobs:
 
       - name: Download Tarball from Release
         run: |
-          TAG="v${{ github.event.inputs.PXB_VERSION }}-glib${{ github.event.inputs.glib_version }}"
-          ARCH_SUBSTR="Linux-aarch64"
+          TAG="v${{ github.event.inputs.PXB_VERSION }}"
+          GLIB="${{ github.event.inputs.glib_version }}"
+          MATCH="Linux-aarch64.glibc${GLIB}"
           API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG}"
 
           echo "============================================"
           echo "  从 Release 下载二进制"
           echo "============================================"
           echo "  Release tag: ${TAG}"
-          echo "  架构子串:    ${ARCH_SUBSTR}"
+          echo "  匹配子串:    ${MATCH}"
           echo "============================================"
 
           echo ">>> 查询 Release assets..."
-          ASSET_URL=$(curl -fsSL "${API_URL}" | jq -r ".assets[].browser_download_url" | grep "${ARCH_SUBSTR}" | head -1 || true)
+          ASSET_URL=$(curl -fsSL "${API_URL}" | jq -r ".assets[].browser_download_url" | grep "${MATCH}" | head -1 || true)
 
           if [ -z "${ASSET_URL}" ]; then
-            echo "❌ 未在 Release ${TAG} 找到含 '${ARCH_SUBSTR}' 的 tarball"
-            echo "    可能原因:build-binary.yml 还没用此版本号跑过,或版本号/glibc 填错。"
+            echo "❌ 未在 Release ${TAG} 找到匹配 '${MATCH}' 的 tarball"
+            echo "    可能原因:build-binary.yml 还没用此 glib_version 跑过,或版本号/glibc 填错。"
             echo "    该 Release 现有 assets:"
             curl -fsSL "${API_URL}" | jq -r '.assets[].name' 2>/dev/null || echo "    (无法读取 Release)"
             exit 1

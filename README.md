@@ -6,34 +6,57 @@
 
 ## 支持的版本
 
-| PXB 版本 | glibc | boost | 适用场景 |
-|----------|-------|-------|---------|
-| 8.0.35-36 | 2.28(Rocky 8) | 1.77.0 | 主流(Rocky8 / KylinV10 / RHEL8) |
-| 8.0.35-36 | 2.17(CentOS 7) | 1.77.0 | 老 glibc 兼容(仅 amd64) |
-| 2.4.29 | 2.17(CentOS 7) | 1.59.0 | 老版本 PXB(MySQL 5.7) |
+每个 PXB 版本一个 Release,下含该版本的全部 glibc × 架构组合:
+
+| PXB 版本 | glibc | boost | 架构 | 适用场景 |
+|----------|-------|-------|------|---------|
+| 8.0.35-36 | 2.17(CentOS 7)/ 2.28(Rocky 8) | 1.77.0 | amd64 + arm64 | 主流(MySQL 8.0) |
+| 2.4.29 | 2.17(CentOS 7)/ 2.28(Rocky 8) | 1.59.0 | amd64 + arm64 | 老版本(MySQL 5.7) |
 
 ---
 
 ## 一、使用二进制(下载即用)
 
-已发布的二进制在 [Releases](../../releases) 页面,文件名含架构与 glibc 后缀:
+已发布的二进制在 [Releases](../../releases) 页面。**Release 版本以 PXB 版本为准**(如 `v8.0.35-36`),
+一个 Release 下汇总该 PXB 版本的全部变体——文件名含架构与 glibc 后缀以区分:
 
 ```
-percona-xtrabackup-8.0.35-36-Linux-x86_64.glibc2.28.tar.gz     # amd64
-percona-xtrabackup-8.0.35-36-Linux-aarch64.glibc2.28.tar.gz    # arm64
+percona-xtrabackup-8.0.35-36-Linux-x86_64.glibc2.17.tar.gz      # amd64 + glibc 2.17
+percona-xtrabackup-8.0.35-36-Linux-x86_64.glibc2.28.tar.gz      # amd64 + glibc 2.28
+percona-xtrabackup-8.0.35-36-Linux-aarch64.glibc2.17.tar.gz     # arm64 + glibc 2.17
+percona-xtrabackup-8.0.35-36-Linux-aarch64.glibc2.28.tar.gz     # arm64 + glibc 2.28
 ```
 
-### 安装
+### 如何选择包
+
+按目标机的 **CPU 架构** + **glibc 版本** 选对应 tarball:
 
 ```bash
-# 选对应架构和 glibc 版本的包
-tar -xzf percona-xtrabackup-8.0.35-36-Linux-x86_64.glibc2.28.tar.gz -C /usr/local/
-export PATH="/usr/local/percona-xtrabackup-8.0.35-36-Linux-x86_64.glibc2.28/bin:$PATH"
+uname -m           # x86_64 = amd64,aarch64 = arm64
+ldd --version      # 看 glibc 版本(第一行末尾)
+```
 
+> **向后兼容**:glibc 2.17 的包能在 ≥ 2.17 的任何系统跑。不确定就选低版本(2.17),兼容性最广。
+
+### 安装(以 glibc2.28 + x86_64 为例)
+
+```bash
+# 1. 解压并固定目录名(避免版本号路径)
+tar -xzf percona-xtrabackup-8.0.35-36-Linux-x86_64.glibc2.28.tar.gz -C /usr/local/
+mv /usr/local/percona-xtrabackup-* /usr/local/xtrabackup
+
+# 2. 加入 PATH(永久生效)
+echo 'export PATH=/usr/local/xtrabackup/bin:$PATH' >> /etc/profile
+source /etc/profile
+
+# 3. 检查动态链接库(应无 not found 输出)
+ldd /usr/local/xtrabackup/bin/xtrabackup | grep "not found"
+
+# 4. 测试
 xtrabackup --version
 ```
 
-无需安装任何系统依赖——ssl/crypto/libaio 等已打包进 `lib/private`,通过 RPATH 自动加载。
+无需安装任何系统依赖——ssl/crypto/libaio/procps 等已打包进 `lib/private`,通过 RPATH 自动加载。
 
 ## 二、使用 Docker 镜像
 
@@ -84,14 +107,16 @@ build-image.yml        →  从 Release 拉 tarball → 打 Docker 镜像 → �
 
 ### 2. 编译二进制(`build-binary.yml`)
 
-用基础镜像编译 PXB,产出便携式 tarball 并发到 GitHub Release。
+用基础镜像编译 PXB,产出便携式 tarball 并发到 GitHub Release。**Release 版本以 PXB 版本为准**——
+同一 PXB 版本选不同 `glib_version` 多次触发,产物会**累积到同一个 Release**(tag `v<PXB>`)。
 
 | 参数 | 说明 | 示例 |
 |------|------|------|
-| `PXB_VERSION` | PXB 完整版本号 | `8.0.35-36` / `2.4.29` |
-| `glib_version` | glibc 版本(决定用哪个基础镜像) | `2.28` / `2.17` |
+| `PXB_VERSION` | PXB 完整版本号(决定 Release tag) | `8.0.35-36` / `2.4.29` |
+| `glib_version` | glibc 版本(决定用哪个基础镜像 + tarball 的 glibc 后缀) | `2.28` / `2.17` |
 
-产出:Release tag `v<PXB>-glib<glib>`,挂两个架构的 tarball。
+产出:Release tag `v<PXB>`,每次追加该 glib 的两架构 tarball。
+要凑齐全 4 个组合(2 glib × 2 架构),需用相同 `PXB_VERSION` 触发两次(`glib_version` 分别选 2.17 / 2.28)。
 
 > ⚠️ 前置:对应 `base-glib-<glib>` 基础镜像已推到 ACR(先跑工作流 1)。
 
@@ -101,21 +126,24 @@ build-image.yml        →  从 Release 拉 tarball → 打 Docker 镜像 → �
 
 | 参数 | 说明 | 示例 |
 |------|------|------|
-| `PXB_VERSION` | 对应已发布的 Release 版本 | `8.0.35-36` |
-| `glib_version` | 对应 Release tag 后缀 | `2.28` |
+| `PXB_VERSION` | 对应已发布的 Release tag(不含 glib 后缀) | `8.0.35-36` |
+| `glib_version` | 要打镜像的 glibc 版本(决定下哪个 tarball) | `2.28` |
 | `architecture` | 目标架构 | `all` / `amd64` / `arm64` |
 
 产出 tag:`<ACR>/<NS>/xtrabackup:<PXB>-glib<glib>`(多架构)。
 
-> ⚠️ 前置:① 目标 Release 已发布(先跑工作流 2);② `base-glib-<glib>` 基础镜像已在 ACR。
+> ⚠️ 前置:① 目标 Release 已发布对应 glib 的 tarball(先跑工作流 2);② `base-glib-<glib>` 基础镜像已在 ACR。
 
 ### 典型完整流程(从零到镜像)
 
 ```
 1. build-base-image.yml   glib=2.28, arch=all, zone=cn   →  base-glib-2.28 推 ACR
-2. build-binary.yml       PXB=8.0.35-36, glib=2.28        →  Release v8.0.35-36-glib2.28
+2. build-binary.yml       PXB=8.0.35-36, glib=2.28        →  Release v8.0.35-36(追加 glib2.28 的 tarball)
 3. build-image.yml        PXB=8.0.35-36, glib=2.28, all   →  xtrabackup:8.0.35-36-glib2.28 镜像
 ```
+
+> 想让一个 PXB 版本的 Release 凑齐全 4 个组合(2 glib × 2 架构):用相同 `PXB_VERSION`
+> 把工作流 2 跑两次(`glib_version` 分别 2.17 / 2.28),产物累积到同一个 `v<PXB>` Release。
 
 amd64 / arm64 各用原生 runner 并行编译(`ubuntu-latest` + `ubuntu-24.04-arm`),不走 QEMU。
 
@@ -202,5 +230,5 @@ xtrabackup-binary/
 
 ## 已知限制
 
-- **glib2.17 + arm64 不可用**:CentOS 7 无官方 arm64 镜像。选 `glib_version=2.17` 时仅 amd64
+- 全部 4 组合(PXB 8.0.35-36 / 2.4.29 × glibc 2.17 / 2.28)的 amd64 + arm64 均已构建通过
 - **CI 所需仓库配置**(已配好):Variables `ALIYUN_REGISTRY` / `ALIYUN_NAME_SPACE` / `ALIYUN_REGISTRY_USER`,Secret `ALIYUN_REGISTRY_PASSWORD`
