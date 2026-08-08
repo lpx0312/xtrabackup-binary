@@ -91,6 +91,24 @@ MAKE_JFLAG="${MAKE_JFLAG:--j$PROCESSORS}"
 # ----------------------------------------------------------------------------
 # Step 1: 编译 PXB
 # ----------------------------------------------------------------------------
+
+# ---- 源码 patch(按需,仅特定版本+架构触发,幂等)----
+# PXB 2.4(基于 MySQL 5.7)在 aarch64 + CentOS 7(glibc 2.17)下编译报
+#   sql/mysqld.cc: error: 'prctl' was not declared in this scope
+# 原因:该组合的 glibc/kernel headers 不会自动声明 prctl(需显式 #include <sys/prctl.h>)。
+# 仅在 2.4 + aarch64 时打补丁,其它组合(8.0 / amd64 / glibc2.28)不受影响。
+if [ "${XB_VERSION_MAJOR}" -lt 8 ] 2>/dev/null && [ "$(uname -m)" = "aarch64" ]; then
+    MYCC="$SRC_DIR/sql/mysqld.cc"
+    if [ -f "$MYCC" ] && ! grep -q 'sys/prctl.h' "$MYCC"; then
+        echo ">>> [patch] PXB 2.4 + aarch64: 给 sql/mysqld.cc 补 #include <sys/prctl.h>"
+        # 不依赖具体锚点行:在第一个 #include 之后插入(C 预处理不关心顺序,
+        # 只要出现在 prctl 调用之前即可)。用 awk 保证只插一次。
+        awk '!done && /^#include / {print; print "#include <sys/prctl.h>"; done=1; next} 1' "$MYCC" > "$MYCC.tmp" \
+            && mv "$MYCC.tmp" "$MYCC"
+        grep -q 'sys/prctl.h' "$MYCC" || { echo "错误: patch prctl.h 失败"; exit 1; }
+    fi
+fi
+
 echo ">>> [1/4] 编译 PXB (cmake + make) ..."
 
 rm -rf "$BUILD_DIR" "$STAGE_DIR"
