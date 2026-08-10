@@ -216,8 +216,9 @@ RUN set -e && \
     /usr/local/openssl-1.1/bin/openssl version
 
 # 全局暴露 OpenSSL 1.1.1 给 cmake/编译(通过 PATH + PKG_CONFIG_PATH)
+# CentOS 7 默认无 PKG_CONFIG_PATH(系统用 rpm 的 .pc),这里直接设值不拼接旧值
 ENV PATH="/usr/local/openssl-1.1/bin:${PATH}" \
-    PKG_CONFIG_PATH="/usr/local/openssl-1.1/lib64/pkgconfig:${PKG_CONFIG_PATH}"
+    PKG_CONFIG_PATH="/usr/local/openssl-1.1/lib64/pkgconfig"
 
 # CentOS 7 glibc 版本
 RUN ldd --version | head -1 && \
