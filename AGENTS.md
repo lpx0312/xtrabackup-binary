@@ -438,7 +438,12 @@ docker rm tmp
 
 ## 关键技术要点(踩坑总结)
 
-这些是打包逻辑必须对齐官方的地方,改动 `pxb-build-binary.sh` 时务必保持:
+这些是打包逻辑必须对齐官方的地方,改动 `pxb-build-binary.sh` 时务必保持。
+
+> **参考来源**:本项目的打包逻辑(gather_libs / set_runpath / replace_libs / check_libs、
+> lib/private 收集、RPATH 而非 RUNPATH、NEEDED/SONAME 改无版本号等)大量参考 Percona 官方的
+> [percona-xtradb-cluster/build-ps/build-binary.sh](https://github.com/percona/percona-xtradb-cluster/blob/8.0/build-ps/build-binary.sh)
+> (XtraDB Cluster 的构建脚本,该脚本末尾的 `link()` 函数是上述 patchelf 逻辑的蓝本)。
 
 1. **patchelf 必须 ≥ 0.18**(基础镜像已装 0.19.1)
    - 0.10 版本对 PXB 这种 256-notes 的大 ELF 处理 `--force-rpath` / `--set-soname`

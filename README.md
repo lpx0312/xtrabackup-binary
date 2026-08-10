@@ -247,6 +247,7 @@ xtrabackup-binary/
 | <https://www.percona.com/downloads/> | Percona 官方下载中心(按产品/版本/平台筛选 tarball 或安装包) |
 | <https://repo.percona.com/> | Percona 官方软件包仓库(rpm/deb),XtraBackup 在 `pxb-24/`、`pxb-80/`、`pxb-84-lts/` 等目录 |
 | <https://docs.percona.com/percona-xtrabackup/> | PXB 官方文档(使用方法、备份恢复指南) |
+| <https://github.com/percona/percona-xtradb-cluster/blob/8.0/build-ps/build-binary.sh> | **打包脚本参考**:本项目的 `pxb-build-binary.sh` 大量参考此脚本(gather_libs / set_runpath / replace_libs / check_libs 等逻辑) |
 | <https://github.com/NixOS/patchelf> | patchelf(改 RPATH/SONAME 的工具,本项目依赖它 ≥ 0.18) |
 | <https://www.boost.org/> | boost(PXB 8.0 需 1.77.0,2.4 需 1.59.0) |
 
