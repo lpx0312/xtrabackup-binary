@@ -126,6 +126,13 @@ if [ "${XB_VERSION_MAJOR}" -ge 8 ] 2>/dev/null; then
     # 8.0+:支持自动下载 boost 和 man pages 开关
     CMAKE_OPTS+=(-DDOWNLOAD_BOOST=1 -DWITH_MAN_PAGES=OFF)
 fi
+# OpenSSL:glib2.17 基础镜像自编译了 OpenSSL 1.1.1 到 /usr/local/openssl-1.1
+# (CentOS 7 自带 1.0.2 缺 SSL_set1_host,PXB 8.4 libkmip 编译不过)。
+# 该目录存在时指向它;不存在(glib2.28)则走默认 system,行为不变。
+if [ -d /usr/local/openssl-1.1 ]; then
+    echo ">>> [cmake] 使用自编译 OpenSSL 1.1.1: /usr/local/openssl-1.1"
+    CMAKE_OPTS+=(-DWITH_SSL=/usr/local/openssl-1.1)
+fi
 cmake "$SRC_DIR" "${CMAKE_OPTS[@]}"
 
 make $MAKE_JFLAG
