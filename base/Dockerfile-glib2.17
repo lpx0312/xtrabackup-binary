@@ -191,7 +191,9 @@ ENV CC=/opt/rh/devtoolset/root/usr/bin/gcc \
 # ============================================================
 RUN set -e && \
     cd /tmp && \
-    OS_URL="https://github.com/openssl/openssl/releases/download/OpenSSL-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" && \
+    # GitHub release tag 用下划线(OpenSSL_1_1_1w),文件名用中划线(openssl-1.1.1w.tar.gz)
+    OS_TAG=$(echo "${OPENSSL_VERSION}" | tr '.' '_' | sed 's/^/OpenSSL_/') && \
+    OS_URL="https://github.com/openssl/openssl/releases/download/${OS_TAG}/openssl-${OPENSSL_VERSION}.tar.gz" && \
     echo "==> 下载 OpenSSL ${OPENSSL_VERSION}: $OS_URL" && \
     curl -fsSL -o openssl.tar.gz "$OS_URL" && \
     tar -xzf openssl.tar.gz && \
