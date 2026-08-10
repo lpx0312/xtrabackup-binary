@@ -4,6 +4,12 @@
 和 Docker 镜像。二进制自带运行时依赖(ssl / crypto / libaio / procps 等),**跨发行版可移植**——
 在 glibc ≥ 编译版本的任意 Linux 上解压即用。
 
+> **与官方渠道的关系**:本项目从 [Percona 官方源码](https://github.com/percona/percona-xtrabackup)
+> 编译,产出便携式 tarball(自带依赖)和 Docker 镜像,解决官方包依赖系统库、跨发行版易缺库的问题。
+> 如需官方原版(rpm/deb 包、或按平台选择的 tarball),请到:
+> - **官方下载中心**:<https://www.percona.com/downloads/> —— 按产品/版本/平台筛选,含 XtraBackup tarball 及文档
+> - **官方软件包仓库**:<https://repo.percona.com/> —— rpm/deb 仓库,XtraBackup 在 `pxb-24/`(2.4)、`pxb-80/`(8.0)、`pxb-84-lts/` 等目录下
+
 ## 支持的版本
 
 每个 PXB 版本一个 Release,下含该版本的全部 glibc × 架构组合:
@@ -232,3 +238,15 @@ xtrabackup-binary/
 
 - 全部 4 组合(PXB 8.0.35-36 / 2.4.29 × glibc 2.17 / 2.28)的 amd64 + arm64 均已构建通过
 - **CI 所需仓库配置**(已配好):Variables `ALIYUN_REGISTRY` / `ALIYUN_NAME_SPACE` / `ALIYUN_REGISTRY_USER`,Secret `ALIYUN_REGISTRY_PASSWORD`
+
+## 参考链接
+
+| 链接 | 用途 |
+|------|------|
+| <https://github.com/percona/percona-xtrabackup> | PXB 源码仓库(本项目编译的源头) |
+| <https://www.percona.com/downloads/> | Percona 官方下载中心(按产品/版本/平台筛选 tarball 或安装包) |
+| <https://repo.percona.com/> | Percona 官方软件包仓库(rpm/deb),XtraBackup 在 `pxb-24/`、`pxb-80/`、`pxb-84-lts/` 等目录 |
+| <https://docs.percona.com/percona-xtrabackup/> | PXB 官方文档(使用方法、备份恢复指南) |
+| <https://github.com/NixOS/patchelf> | patchelf(改 RPATH/SONAME 的工具,本项目依赖它 ≥ 0.18) |
+| <https://www.boost.org/> | boost(PXB 8.0 需 1.77.0,2.4 需 1.59.0) |
+

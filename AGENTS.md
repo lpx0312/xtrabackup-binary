@@ -507,6 +507,19 @@ https://archives.boost.io/release/1.59.0/source/boost_1_59_0.tar.bz2
 https://github.com/NixOS/patchelf/releases/download/0.19.1/patchelf-0.19.1-x86_64.tar.gz
 ```
 
+### 官方下载渠道(参考)
+
+本项目从源码编译,产出便携式二进制。如需 Percona 官方原版(rpm/deb 包、按平台选择的 tarball):
+
+- **官方下载中心**:<https://www.percona.com/downloads/> —— 按产品/版本/平台筛选,含 XtraBackup
+  的二进制 tarball 及安装说明。
+- **官方软件包仓库**:<https://repo.percona.com/> —— rpm/deb 仓库,XtraBackup 在:
+  - `pxb-24/` —— PXB 2.4
+  - `pxb-80/` —— PXB 8.0
+  - `pxb-84-lts/` —— PXB 8.4 LTS
+  - `pxb-8x-innovation/` —— PXB 8.x 创新版
+- **PXB 官方文档**:<https://docs.percona.com/percona-xtrabackup/>
+
 ## 已知差异与待改进
 
 记录文档与代码、或代码内部的不一致,改动时优先处理:
