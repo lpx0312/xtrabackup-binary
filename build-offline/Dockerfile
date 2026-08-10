@@ -26,7 +26,7 @@
 #   docker build -f Dockerfile \
 #       --build-arg BASE_IMAGE=xtrabackup:base-glib-2.17 \
 #       --build-arg PXB_TARBALL=percona-xtrabackup-2.4.29.tar.gz \
-#       --build-arg BOOST_TARBALL=boost_1_59_0.tar.gz \
+#       --build-arg BOOST_TARBALL=boost_1_59_0.tar.bz2 \
 #       -t xtrabackup:2.4.29-glib2.17 .
 ###############################################################################
 

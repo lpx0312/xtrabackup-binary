@@ -7,7 +7,7 @@ set -euo pipefail
 # 每个 ARCH 各跑一次,推送带后缀的单架构 tag:
 #   xtrabackup:<PXB_VERSION>-glib<GLIB_VERSION>-amd64
 #   xtrabackup:<PXB_VERSION>-glib<GLIB_VERSION>-arm64
-# 多架构 manifest 的合并由 workflow 的 merge-manifest job 完成(docker manifest create/push)。
+# 多架构 manifest 的合并由 workflow 的 merge-manifest job 完成(docker buildx imagetools create)。
 #
 # 环境变量:
 #   PXB_VERSION         - PXB 完整版本号(必填)

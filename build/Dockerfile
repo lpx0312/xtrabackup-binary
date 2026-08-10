@@ -7,7 +7,7 @@
 # 适合 GitHub Actions 等 CI 环境(有外网)。
 #
 # boost 版本无需手动指定 —— 自动从源码 cmake/boost.cmake 读取:
-#   8.0+ → boost_1_77_0.tar.bz2,2.4 → boost_1_59_0.tar.gz
+#   8.0+ → boost_1_77_0.tar.bz2,2.4 → boost_1_59_0.tar.bz2
 #
 # 构建上下文:
 #   xtrabackup-binary/build/
@@ -40,7 +40,7 @@ WORKDIR /root
 
 # 必填:PXB 版本号(如 8.0.35-36、2.4.29)
 # boost 版本无需指定 —— 自动从源码 cmake/boost.cmake 读取
-#   (8.0+ → boost_1_77_0.tar.bz2,2.4 → boost_1_59_0.tar.gz)
+#   (8.0+ → boost_1_77_0.tar.bz2,2.4 → boost_1_59_0.tar.bz2)
 ARG PXB_VERSION
 # 可选:下载代理(GitHub Actions 一般不用,内网构建时可设为 http://x:x)
 ARG DOWNLOAD_PROXY=""

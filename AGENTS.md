@@ -170,14 +170,15 @@ GitHub 仓库 **Settings → Variables / Secrets**(已在 `lpx0312/xtrabackup-bi
 - **Variables**:`ALIYUN_REGISTRY`、`ALIYUN_NAME_SPACE`、`ALIYUN_REGISTRY_USER`
 - **Secrets**:`ALIYUN_REGISTRY_PASSWORD`
 
-> 命名空间/账号与参考仓库 `lpx0312/dockerBuild` 一致。脚本里 ACR 变量也带默认值兜底
-> (`registry.cn-hangzhou.aliyuncs.com` / `lpx03` / `lipanx`),方便本地手跑。
+> 命名空间/账号与参考仓库 `lpx0312/dockerBuild` 一致。CI 脚本里的 ACR 变量都是必填
+> (`${VAR:?ERROR}` 缺失即报错),本地手跑时需先 `export` 这些变量。
 
 ### 已知限制
 
-- **PXB 2.4 + aarch64 + glibc2.17 需要 prctl 补丁**:PXB 2.4(基于 MySQL 5.7)在该组合下
-  编译报 `prctl was not declared`,`pxb-build-binary.sh` 已内置条件 patch(仅此组合触发,
-  给 `sql/mysqld.cc` 补 `#include <sys/prctl.h>`)。其它组合(8.0 / amd64 / glibc2.28)无此问题。
+- **PXB 2.4 + aarch64 需要 prctl 补丁**:PXB 2.4(基于 MySQL 5.7)在 aarch64 上编译报
+  `prctl was not declared`,`pxb-build-binary.sh` 已内置条件 patch(`XB_VERSION_MAJOR < 8`
+  且 `uname -m == aarch64` 时触发,不区分 glibc 版本;给 `sql/mysqld.cc` 补
+  `#include <sys/prctl.h>`)。PXB 8.0 / amd64 无此问题。
 - glib2.17 的 `base/Dockerfile-glib2.17` 基于 `centos:7.9.2009`,Docker Hub 只有 amd64,
   但 Dockerfile 已用 vault `altarch` 源适配 arm64,**实测四组合(2 PXB × 2 glib)amd64+arm64 全部通过**。
 - arm64 走**原生 runner** `ubuntu-24.04-arm`(不走 QEMU),编译约 20 分钟,与 amd64 并行,不互相阻塞。
@@ -494,7 +495,7 @@ docker rm tmp
 | boost 需求 | 1.77.0(`.tar.bz2`) | 1.59.0(`.tar.bz2`) | 自动从 `boost.cmake` 识别 |
 | boost 目录名 | `boost_8.0.35`(MYSQL 版本号) | `boost_2.4.29`(XB 版本号) | 同 8.0 规则 |
 | cmake `DOWNLOAD_BOOST` | 支持 | **不支持**(必须本地提供) | 支持 |
-| gcc toolset | gcc-toolset-12(glib2.28) / devtoolset-11(glib2.17) | devtoolset-11(glib2.17) | 同 8.0 |
+| gcc toolset | gcc-toolset-12(glib2.28) / devtoolset-11(glib2.17 amd64) | devtoolset-11(amd64)/devtoolset-10(arm64) | 同 8.0 |
 | `download.sh` 清单 | ✓ | ✓ | ✗(需自行准备/走网络版) |
 
 ## 下载地址(URL 已核实)
@@ -527,24 +528,12 @@ https://github.com/NixOS/patchelf/releases/download/0.19.1/patchelf-0.19.1-x86_6
 
 ## 已知差异与待改进
 
-记录文档与代码、或代码内部的不一致,改动时优先处理:
+记录待优化项(已解决的会从此处移除):
 
-1. **缺少 `.gitignore`**:文档说"二进制不入库,gitignore 忽略",但仓库**没有** `.gitignore`。
-   目前 `build-offline/sources/*.tar.*` 只是恰好没被 `git add`,存在误提交风险。
-   建议新增:
-   ```gitignore
-   # build-offline 源码/boost 包(由 download.sh 按需下载)
-   build-offline/sources/*.tar.gz
-   build-offline/sources/*.tar.bz2
-   build-offline/sources/*.tar.xz
-   # 编译产物
-   output/
-   ```
+1. **`pxb-build-binary.sh` 没有唯一源头**:**当前两份副本(`build/`、`build-offline/`)已逐字节
+   一致**,但仍靠手动同步,没有"根目录主脚本",存在后续漂移风险。建议二选一:
+   (a) 在根目录放主脚本、两处改为软链或 CI 拷贝;(b) 在 CI 里加一步 `diff` 校验两份一致。
 
-2. **`pxb-build-binary.sh` 没有唯一源头**:两份副本(`build/`、`build-offline/`)手动同步,
-   没有"根目录主脚本"。建议二选一:(a) 在根目录放主脚本、两处改为软链或 CI 拷贝;
-   (b) 在 CI 里加一步 `diff` 校验两份一致,防止漂移。
-
-3. **`download.sh` 清单不含 8.4.x**:CI 的 `PXB_VERSION` 是自由输入可填任意版本,但
+2. **`download.sh` 清单不含 8.4.x**:CI 的 `PXB_VERSION` 是自由输入可填任意版本,但
    `build-offline/sources/download.sh` 的 `FILES`/`ALIAS` 只有 8.0.35-36 和 2.4.29。
    要离线构建其它版本(如 8.4.x),需手动准备源码,或补 `download.sh` 条目。

@@ -4,13 +4,13 @@ name: Build Image
 # 职责单一:不做编译,二进制由 build-binary.yml 产出并发布到 Release。
 #
 # 入参:
-#   PXB_VERSION   - PXB 完整版本号(如 8.0.35-36)。用于拼 Release tag + 镜像 tag
-#   glib_version  - glibc 版本(2.28/2.17)。用于拼 Release tag + 选基础镜像
+#   PXB_VERSION   - PXB 完整版本号(如 8.0.35-36)。用于定位 Release tag(v<PXB>)+ 镜像 tag
+#   glib_version  - glibc 版本(2.28/2.17)。决定下哪个 tarball + 用哪个基础镜像
 #   architecture  - all / amd64 / arm64(默认 all)。控制是否两个架构都构建
 #
 # 前置依赖(缺失会在对应步骤明确报错):
-#   1. 目标 Release 已发布 —— build-binary.yml 用相同 PXB_VERSION + glib_version 跑过,
-#      tag `v<PXB>-glib<glib>` 存在,挂有两架构 tarball
+#   1. 目标 Release 已发布对应 glib 的 tarball —— build-binary.yml 用相同 PXB_VERSION +
+#      glib_version 跑过,Release tag `v<PXB>` 下存在匹配 <arch>.glibc<glib> 的 tarball
 #   2. 基础镜像已推 ACR —— build-base-image.yml 推过 base-glib-<glib> 多架构 tag
 #      (ci-build-image.sh 的 FROM 依赖它)
 #
@@ -22,7 +22,7 @@ name: Build Image
 # 注意:不使用 matrix + runs-on: ${{ matrix.runner }}。实测该写法触发 startup_failure
 # (GitHub 启动阶段无法可靠解析动态 runner label)。故拆成两个独立 job,runs-on 用静态字符串。
 #
-# 镜像 tag 规则(与 build-binary 旧逻辑保持一致):
+# 镜像 tag 规则:
 #   <ACR>/<NS>/xtrabackup:<PXB>-glib<glib>-amd64    ← build-image-amd64 产出
 #   <ACR>/<NS>/xtrabackup:<PXB>-glib<glib>-arm64    ← build-image-arm64 产出
 #   <ACR>/<NS>/xtrabackup:<PXB>-glib<glib>           ← merge-manifest 合并(不带架构后缀 = 多架构)
@@ -34,7 +34,7 @@ on:
   workflow_dispatch:
     inputs:
       PXB_VERSION:
-        description: 'PXB 完整版本号(对应已发布的 Release tag v<PXB>-glib<glib>,如 8.0.35-36)'
+        description: 'PXB 完整版本号(对应已发布的 Release tag v<PXB>,如 8.0.35-36)'
         required: true
         default: '8.0.35-36'
         type: string
