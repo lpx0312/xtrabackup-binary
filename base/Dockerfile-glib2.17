@@ -207,18 +207,20 @@ RUN set -e && \
     make -j"$(nproc)" && \
     make install_sw install_ssldirs && \
     cd / && rm -rf /tmp/openssl* && \
-    # 让系统优先找到 1.1.1:/usr/local/lib64 在默认搜索路径前
-    echo "/usr/local/openssl-1.1/lib64" > /etc/ld.so.conf.d/openssl-1.1.conf && \
+    # OpenSSL 1.1.1 在 CentOS 7 上装到 lib/(非 lib64),探测实际路径写 ldconfig
+    OS_LIB=$(dirname "$(find /usr/local/openssl-1.1 -name 'libssl.so.1.1' | head -1)") && \
+    echo "${OS_LIB}" > /etc/ld.so.conf.d/openssl-1.1.conf && \
     ldconfig && \
     # pkg-config 让 cmake find_package(OpenSSL) 找到 1.1.1 的 headers
-    ln -sf /usr/local/openssl-1.1/lib64/pkgconfig/openssl.pc /usr/local/lib64/pkgconfig/ 2>/dev/null || true && \
-    echo "==> OpenSSL ${OPENSSL_VERSION} 安装完成:" && \
+    ln -sf "${OS_LIB}/pkgconfig/openssl.pc" /usr/local/lib/pkgconfig/ 2>/dev/null || true && \
+    echo "==> OpenSSL ${OPENSSL_VERSION} 安装完成 (lib: ${OS_LIB}):" && \
     /usr/local/openssl-1.1/bin/openssl version
 
 # 全局暴露 OpenSSL 1.1.1 给 cmake/编译(通过 PATH + PKG_CONFIG_PATH)
 # CentOS 7 默认无 PKG_CONFIG_PATH(系统用 rpm 的 .pc),这里直接设值不拼接旧值
+# OpenSSL 1.1.1 装到 lib/(非 lib64)
 ENV PATH="/usr/local/openssl-1.1/bin:${PATH}" \
-    PKG_CONFIG_PATH="/usr/local/openssl-1.1/lib64/pkgconfig"
+    PKG_CONFIG_PATH="/usr/local/openssl-1.1/lib/pkgconfig"
 
 # CentOS 7 glibc 版本
 RUN ldd --version | head -1 && \
